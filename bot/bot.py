@@ -2,7 +2,8 @@
 Discord Verification System - Bot Implementation
 Simplified version without monetization
 """
-
+import os
+os.environ["DISCORD_NO_VOICE"] = "1"
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
