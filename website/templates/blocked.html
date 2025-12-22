@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Access Blocked - Security System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .security-alert {
+            background: linear-gradient(135deg, #ff6b6b 0%, #c92a2a 100%);
+            color: white;
+            padding: 40px;
+            border-radius: 15px;
+            text-align: center;
+            margin: 20px 0;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+        .security-code {
+            font-family: monospace;
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-size: 1.2rem;
+            letter-spacing: 2px;
+        }
+        .countdown {
+            font-size: 3rem;
+            font-weight: bold;
+            color: #ffd700;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="verification-container">
+        <div class="verification-card">
+            <div class="security-alert">
+                <i class="fas fa-shield-alt fa-4x"></i>
+                <h1>🔒 Access Temporarily Blocked</h1>
+                <p class="subtitle">Security System Activation</p>
+            </div>
+            
+            <div class="verification-body">
+                <div class="warning-box">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p><strong>Security Alert:</strong> Your access has been temporarily restricted by our security system.</p>
+                </div>
+                
+                <div class="info-box">
+                    <h3><i class="fas fa-info-circle"></i> Block Details:</h3>
+                    <ul>
+                        <li><i class="fas fa-ban"></i> <strong>Reason:</strong> {{ reason }}</li>
+                        <li><i class="fas fa-clock"></i> <strong>Block Expires:</strong> 
+                            {% if expires %}
+                                {{ expires.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+                            {% else %}
+                                Manual review required
+                            {% endif %}
+                        </li>
+                        <li><i class="fas fa-id-card"></i> <strong>Reference ID:</strong> 
+                            <span class="security-code">BLK-{{ range(1, 1000000)|random|string|rjust(6, '0') }}</span>
+                        </li>
+                    </ul>
+                </div>
+                
+                {% if expires %}
+                <div class="info-box">
+                    <h3><i class="fas fa-hourglass-half"></i> Time Remaining:</h3>
+                    <div class="countdown" id="countdown">--:--:--</div>
+                    <p>Access will be automatically restored after this time</p>
+                </div>
+                {% endif %}
+                
+                <div class="info-box">
+                    <h3><i class="fas fa-question-circle"></i> What to do:</h3>
+                    <ul>
+                        <li><i class="fas fa-check"></i> Wait for the block to expire</li>
+                        <li><i class="fas fa-check"></i> Contact server administrators if you believe this is an error</li>
+                        <li><i class="fas fa-check"></i> Ensure you're not using VPN/Proxy services</li>
+                        <li><i class="fas fa-check"></i> Clear browser cache and cookies</li>
+                    </ul>
+                </div>
+                
+                <div class="contact-options">
+                    <div class="contact-option">
+                        <i class="fab fa-discord"></i>
+                        <strong>Discord Support</strong>
+                        <p>Join our Discord server for assistance</p>
+                        <a href="#" class="btn-small" style="background: #5865F2;">
+                            <i class="fab fa-discord"></i> Get Help
+                        </a>
+                    </div>
+                    
+                    <div class="contact-option">
+                        <i class="fas fa-envelope"></i>
+                        <strong>Email Appeal</strong>
+                        <p>Send an appeal to our security team</p>
+                        <a href="mailto:security@example.com" class="btn-small" style="background: #3498db;">
+                            <i class="fas fa-envelope"></i> Send Appeal
+                        </a>
+                    </div>
+                </div>
+                
+                <div class="warning-box" style="margin-top: 20px;">
+                    <i class="fas fa-exclamation-circle"></i>
+                    <p><strong>Note:</strong> Repeated security violations may result in permanent bans. This system protects our community from malicious activity.</p>
+                </div>
+            </div>
+            
+            <div class="verification-footer">
+                <p><i class="fas fa-shield-alt"></i> Powered by Advanced Security System v2.0</p>
+                <p><a href="/" style="color: #666;">← Return to Home</a></p>
+            </div>
+        </div>
+    </div>
+    
+    {% if expires %}
+    <script>
+        // Countdown timer
+        const expireTime = new Date("{{ expires.isoformat() }}").getTime();
+        
+        function updateCountdown() {
+            const now = new Date().getTime();
+            const distance = expireTime - now;
+            
+            if (distance < 0) {
+                document.getElementById("countdown").innerHTML = "EXPIRED";
+                location.reload();
+                return;
+            }
+            
+            const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+            const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((distance % (1000 * 60)) / 1000);
+            
+            document.getElementById("countdown").innerHTML = 
+                `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+        
+        updateCountdown();
+        setInterval(updateCountdown, 1000);
+    </script>
+    {% endif %}
+</body>
+</html>

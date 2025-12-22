@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Banned IPs - Admin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="admin-sidebar">
+        <div class="sidebar-header">
+            <h3><i class="fas fa-shield-alt"></i> Admin Panel</h3>
+            <p>{{ session.admin_username }}</p>
+        </div>
+        
+        <ul class="sidebar-menu">
+            <li><a href="/admin/dashboard"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+            <li><a href="/admin/banned" class="active"><i class="fas fa-ban"></i> Banned IPs</a></li>
+            <li><a href="/admin/verified"><i class="fas fa-check-circle"></i> Verified Users</a></li>
+            <li><a href="/admin/logout"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+        </ul>
+    </div>
+    
+    <div class="content-wrapper">
+        <div class="admin-container">
+            <h1><i class="fas fa-ban"></i> Banned IPs</h1>
+            
+            {% if banned_list %}
+            <div class="table-container">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Discord ID</th>
+                            <th>IP Address</th>
+                            <th>Reason</th>
+                            <th>Banned By</th>
+                            <th>Date</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ban in banned_list %}
+                        <tr>
+                            <td>{{ ban.username }}</td>
+                            <td>{{ ban.discord_id }}</td>
+                            <td>{{ ban.ip_address }}</td>
+                            <td>{{ ban.reason }}</td>
+                            <td>{{ ban.banned_by }}</td>
+                            <td>{{ ban.banned_at.strftime('%Y-%m-%d %H:%M') if ban.banned_at else 'N/A' }}</td>
+                            <td>
+                                <a href="/admin/unban/{{ ban.ip_address }}" class="btn-action btn-unban">
+                                    <i class="fas fa-unlock"></i> Unban
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <i class="fas fa-check-circle fa-3x"></i>
+                <h3>No banned IPs</h3>
+                <p>No users have been banned yet.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>

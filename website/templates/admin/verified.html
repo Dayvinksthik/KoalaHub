@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verified Users - Admin</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="admin-sidebar">
+        <div class="sidebar-header">
+            <h3><i class="fas fa-shield-alt"></i> Admin Panel</h3>
+            <p>{{ session.admin_username }}</p>
+        </div>
+        
+        <ul class="sidebar-menu">
+            <li><a href="/admin/dashboard"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+            <li><a href="/admin/banned"><i class="fas fa-ban"></i> Banned IPs</a></li>
+            <li><a href="/admin/verified" class="active"><i class="fas fa-check-circle"></i> Verified Users</a></li>
+            <li><a href="/admin/logout"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+        </ul>
+    </div>
+    
+    <div class="content-wrapper">
+        <div class="admin-container">
+            <h1><i class="fas fa-check-circle"></i> Verified Users</h1>
+            
+            {% if verified_list %}
+            <div class="table-container">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Discord ID</th>
+                            <th>IP Address</th>
+                            <th>VPN Detected</th>
+                            <th>Last Seen</th>
+                            <th>Verified Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in verified_list %}
+                        <tr>
+                            <td>{{ user.username }}</td>
+                            <td>{{ user.discord_id }}</td>
+                            <td>{{ user.ip_address }}</td>
+                            <td>
+                                {% if user.is_vpn %}
+                                <span class="badge badge-danger">Yes</span>
+                                {% else %}
+                                <span class="badge badge-success">No</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ user.last_seen.strftime('%Y-%m-%d %H:%M') if user.last_seen else 'N/A' }}</td>
+                            <td>{{ user.verified_at.strftime('%Y-%m-%d') if user.verified_at else 'N/A' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <i class="fas fa-user-check fa-3x"></i>
+                <h3>No verified users</h3>
+                <p>No users have verified yet.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>

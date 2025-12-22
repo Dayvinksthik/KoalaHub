@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Help & Support - Discord Verification</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="verification-container">
+        <div class="verification-card">
+            <div class="verification-header" style="background: #3498db;">
+                <i class="fas fa-comments fa-3x"></i>
+                <h1>Help & Support</h1>
+                <p class="subtitle">Need help with verification?</p>
+            </div>
+            
+            <div class="verification-body">
+                <div class="info-box">
+                    <h3><i class="fas fa-question-circle"></i> Common Issues</h3>
+                    <ul>
+                        <li><i class="fas fa-check"></i> <strong>Already Verified?</strong> If you're already verified, just return to the Discord server.</li>
+                        <li><i class="fas fa-check"></i> <strong>VPN Detected?</strong> Turn off your VPN/proxy and try again.</li>
+                        <li><i class="fas fa-check"></i> <strong>IP Banned?</strong> Contact an administrator if you believe this is a mistake.</li>
+                        <li><i class="fas fa-check"></i> <strong>Role Not Given?</strong> Wait a few minutes or contact an administrator.</li>
+                    </ul>
+                </div>
+                
+                <div class="feedback-form">
+                    <h3><i class="fas fa-life-ring"></i> Contact Support</h3>
+                    <p>If you're having issues with verification, here's how to get help:</p>
+                    
+                    <div class="contact-options">
+                        <div class="contact-option">
+                            <i class="fab fa-discord"></i>
+                            <strong>Discord Server</strong>
+                            <p>Join our Discord server and ask for help in the support channel</p>
+                            <a href="#" class="btn-small" style="background: #5865F2;">
+                                <i class="fab fa-discord"></i> Join Support Server
+                            </a>
+                        </div>
+                        
+                        <div class="contact-option">
+                            <i class="fas fa-envelope"></i>
+                            <strong>Email Support</strong>
+                            <p>Send an email to our support team</p>
+                            <a href="mailto:support@example.com" class="btn-small" style="background: #e74c3c;">
+                                <i class="fas fa-envelope"></i> Email Us
+                            </a>
+                        </div>
+                        
+                        <div class="contact-option">
+                            <i class="fas fa-redo"></i>
+                            <strong>Try Again</strong>
+                            <p>Sometimes refreshing and trying again works</p>
+                            <a href="/verify" class="btn-small" style="background: #2ecc71;">
+                                <i class="fas fa-redo"></i> Try Verification Again
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="warning-box" style="margin-top: 20px;">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p><strong>Important:</strong> Powered by KoalaHub.</p>
+                </div>
+                
+                <div class="info-box" style="margin-top: 20px;">
+                    <h3><i class="fas fa-shield-alt"></i> Security Information</h3>
+                    <ul>
+                        <li><i class="fas fa-check"></i> KoalaHub</li>
+                        <li><i class="fas fa-check"></i> We don't store your Discord password</li>
+                        <li><i class="fas fa-check"></i> Your data is encrypted and secure</li>
+                        <li><i class="fas fa-check"></i> VPN users are automatically banned for security</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="verification-footer">
+                <p><i class="fas fa-lock"></i> Your privacy and security are important to us</p>
+                <p><a href="/verify" style="color: #666;">← Back to Verification</a></p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

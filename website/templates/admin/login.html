@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login - Security Required</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .login-security {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            border-left: 4px solid #3498db;
+        }
+        .security-indicator {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+            padding: 10px;
+            background: #e8f4fd;
+            border-radius: 5px;
+        }
+        .security-indicator i {
+            margin-right: 10px;
+            font-size: 1.2rem;
+        }
+        .secure {
+            color: #27ae60;
+        }
+        .warning {
+            color: #f39c12;
+        }
+        .danger {
+            color: #e74c3c;
+        }
+        .attempts-warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+            text-align: center;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-card">
+            <div class="login-header" style="background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);">
+                <i class="fas fa-shield-alt fa-3x"></i>
+                <h1>🔒 Admin Portal</h1>
+                <p class="subtitle">Secure Authentication Required</p>
+            </div>
+            
+            <div class="login-security">
+                <h3><i class="fas fa-lock"></i> Security Status</h3>
+                <div class="security-indicator">
+                    <i class="fas fa-check-circle secure"></i>
+                    <span>HTTPS Connection: <strong>Secure</strong></span>
+                </div>
+                <div class="security-indicator">
+                    <i class="fas fa-shield-alt secure"></i>
+                    <span>Rate Limiting: <strong>Active</strong></span>
+                </div>
+                <div class="security-indicator">
+                    <i class="fas fa-history warning"></i>
+                    <span>Session Timeout: <strong>{{ config.SESSION_TIMEOUT_MINUTES }} minutes</strong></span>
+                </div>
+            </div>
+            
+            {% if error %}
+            <div class="error-box">
+                <i class="fas fa-exclamation-circle"></i>
+                <strong>Authentication Failed:</strong> {{ error }}
+            </div>
+            {% endif %}
+            
+            {% if remaining_attempts is defined and remaining_attempts <= 3 %}
+            <div class="attempts-warning">
+                <i class="fas fa-exclamation-triangle"></i>
+                <strong>Warning:</strong> {{ remaining_attempts }} attempt(s) remaining before lockout
+            </div>
+            {% endif %}
+            
+            <form method="POST" class="login-form" id="loginForm">
+                <div class="form-group">
+                    <label for="username"><i class="fas fa-user-shield"></i> Admin Username</label>
+                    <input type="text" id="username" name="username" required 
+                           autocomplete="username" autocapitalize="none" autocorrect="off">
+                </div>
+                
+                <div class="form-group">
+                    <label for="password"><i class="fas fa-key"></i> Admin Password</label>
+                    <div style="position: relative;">
+                        <input type="password" id="password" name="password" required 
+                               autocomplete="current-password" minlength="8">
+                        <button type="button" id="togglePassword" 
+                                style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: #666; cursor: pointer;">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                    <small style="color: #666; font-size: 12px;">Minimum 8 characters, including uppercase, lowercase, and numbers</small>
+                </div>
+                
+                <div class="form-group">
+                    <div class="g-recaptcha" data-sitekey="your_recaptcha_site_key_here"></div>
+                </div>
+                
+                <button type="submit" class="btn-login" id="loginButton">
+                    <i class="fas fa-sign-in-alt"></i> Authenticate &amp; Login
+                </button>
+            </form>
+            
+            <div class="login-footer">
+                <p><i class="fas fa-info-circle"></i> <strong>Security Notice:</strong> All login attempts are logged and monitored.</p>
+                <p><i class="fas fa-history"></i> Session automatically expires after {{ config.SESSION_TIMEOUT_MINUTES }} minutes of inactivity.</p>
+                <p><i class="fas fa-ip"></i> Your IP: <code>{{ request.remote_addr }}</code></p>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+    <script>
+        // Toggle password visibility
+        document.getElementById('togglePassword').addEventListener('click', function() {
+            const passwordInput = document.getElementById('password');
+            const icon = this.querySelector('i');
+            
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                passwordInput.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            }
+        });
+        
+        // Form submission handling
+        document.getElementById('loginForm').addEventListener('submit', function(e) {
+            const button = document.getElementById('loginButton');
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Authenticating...';
+            button.disabled = true;
+            
+            // Add small delay to show loading state
+            setTimeout(() => {
+                button.disabled = false;
+            }, 3000);
+        });
+        
+        // Auto-focus username field
+        document.getElementById('username').focus();
+        
+        // Log security events
+        console.log('🔒 Admin login page loaded with security features');
+    </script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="admin-sidebar">
+        <div class="sidebar-header">
+            <h3><i class="fas fa-shield-alt"></i> Admin Panel</h3>
+            <p>{{ session.admin_username }}</p>
+        </div>
+        
+        <ul class="sidebar-menu">
+            <li><a href="/admin/dashboard" class="active"><i class="fas fa-tachometer-alt"></i> Dashboard</a></li>
+            <li><a href="/admin/banned"><i class="fas fa-ban"></i> Banned IPs</a></li>
+            <li><a href="/admin/verified"><i class="fas fa-check-circle"></i> Verified Users</a></li>
+            <li><a href="/admin/logout"><i class="fas fa-sign-out-alt"></i> Logout</a></li>
+        </ul>
+        
+        <div class="sidebar-footer">
+            <p>System Status: <span class="status-online">● Online</span></p>
+        </div>
+    </div>
+    
+    <div class="content-wrapper">
+        <div class="dashboard-container">
+            <h1><i class="fas fa-tachometer-alt"></i> Dashboard</h1>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <i class="fas fa-users"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3>Total Users</h3>
+                        <p class="stat-number">{{ stats.total_users }}</p>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <i class="fas fa-user-slash"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3>Banned Users</h3>
+                        <p class="stat-number">{{ stats.banned_users }}</p>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <i class="fas fa-shield-check"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3>Today's Verifications</h3>
+                        <p class="stat-number">{{ stats.today_verifications }}</p>
+                    </div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-icon">
+                        <i class="fas fa-ban"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3>Total Bans</h3>
+                        <p class="stat-number">{{ stats.total_bans }}</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="quick-actions">
+                <h2><i class="fas fa-bolt"></i> Quick Actions</h2>
+                <div class="action-buttons">
+                    <a href="/admin/banned" class="action-btn">
+                        <i class="fas fa-ban"></i>
+                        <span>View Banned IPs</span>
+                    </a>
+                    <a href="/admin/verified" class="action-btn">
+                        <i class="fas fa-check-circle"></i>
+                        <span>View Verified Users</span>
+                    </a>
+                    <a href="/verify" class="action-btn" target="_blank">
+                        <i class="fas fa-external-link-alt"></i>
+                        <span>View Verification Page</span>
+                    </a>
+                </div>
+            </div>
+            
+            <div class="system-info">
+                <h2><i class="fas fa-info-circle"></i> System Information</h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Discord Bot:</span>
+                        <span class="info-value status-online">Online</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Database:</span>
+                        <span class="info-value status-online">Connected</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Webhooks:</span>
+                        <span class="info-value status-online">Active</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">VPN Detection:</span>
+                        <span class="info-value status-online">Active</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

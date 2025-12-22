@@ -1,0 +1,31 @@
+# Core
+discord.py==2.3.2
+Flask==3.0.0
+Flask-CORS==4.0.0
+flask-socketio==5.3.6
+eventlet==0.35.1
+gunicorn==21.2.0
+
+# Database
+pymongo==4.6.0
+dnspython==2.4.2
+redis==5.0.1  # Using redis, not aioredis
+
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
+bcrypt==4.1.2
+cryptography==42.0.5
+aiohttp==3.9.3
+aiofiles==23.2.1
+motor==3.3.2
+Flask-Limiter==3.5.1
+Flask-Talisman==1.1.0
+prometheus-client==0.19.0
+pyotp==2.9.0
+qrcode==7.4.2
+psutil==5.9.7
+humanize==4.8.0
+schedule==1.2.0
+
+# Remove aioredis from requirements
