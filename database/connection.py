@@ -83,7 +83,7 @@ class DatabaseManager:
     
     def _create_indexes(self):
         """Create database indexes for performance"""
-        if not self.db:
+        if not self.db is None:
             return
         
         try:
@@ -193,7 +193,7 @@ class DatabaseManager:
             if cached:
                 return cached
         
-        if not self.db:
+        if not self.db is None:
             return None
         
         user = self.db.users.find_one({"discord_id": str(discord_id)})
@@ -213,7 +213,7 @@ class DatabaseManager:
             if cached is not None:
                 return cached
         
-        if not self.db:
+        if not self.db is None:
             return False
         
         ban = self.db.banned_ips.find_one({
@@ -239,7 +239,7 @@ class DatabaseManager:
             if cached:
                 return cached
         
-        if not self.db:
+        if not self.db is None:
             return {}
         
         try:
@@ -264,7 +264,7 @@ class DatabaseManager:
     
     def _get_today_verifications(self):
         """Get today's verification count"""
-        if not self.db:
+        if not self.db is None:
             return 0
         
         today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -275,7 +275,7 @@ class DatabaseManager:
     
     def _get_active_sessions(self):
         """Get active user sessions"""
-        if not self.db:
+        if not self.db is None:
             return 0
         
         last_15_minutes = datetime.utcnow() - timedelta(minutes=15)
@@ -288,7 +288,7 @@ class DatabaseManager:
     
     def bulk_update_users(self, updates: list):
         """Bulk update users for performance"""
-        if not self.db:
+        if not self.db is None:
             return False
         
         try:
