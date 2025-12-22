@@ -10,7 +10,7 @@ services:
       python run.py
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.9  # Downgrade to 3.11 for compatibility
+        value: 3.12.2  # Use Python 3.12 to include audioop
       - key: FLASK_ENV
         value: production
     healthCheckPath: /health
