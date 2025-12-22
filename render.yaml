@@ -3,15 +3,16 @@ services:
     name: discord-verification
     env: python
     region: virginia
+    plan: starter  # optional, adjust if needed
+    pythonVersion: 3.11  # enforce compatible Python
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: |
-      python run.py
+    startCommand: python run.py
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.2  # Use Python 3.12 to include audioop
       - key: FLASK_ENV
         value: production
+      - key: WEBSITE_URL
+        value: http://koalahub.onrender.com
     healthCheckPath: /health
     autoDeploy: true
