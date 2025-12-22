@@ -118,7 +118,7 @@ class VerificationBot(commands.Bot):
     
     async def create_indexes(self):
         """Create database indexes for performance"""
-        if not self.db:
+        if self.db is None:
             return
         
         indexes = [
