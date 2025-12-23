@@ -67,7 +67,7 @@
                 </div>
                 <div class="security-indicator">
                     <i class="fas fa-history warning"></i>
-                    <span>Session Timeout: <strong>{{ config.SESSION_TIMEOUT_MINUTES }} minutes</strong></span>
+                    <span>Session Timeout: <strong>{{ config.SESSION_TIMEOUT_MINUTES if config else 15 }} minutes</strong></span>
                 </div>
             </div>
             
@@ -78,35 +78,34 @@
             </div>
             {% endif %}
             
-            {% if remaining_attempts is defined and remaining_attempts <= 3 %}
-            <div class="attempts-warning">
-                <i class="fas fa-exclamation-triangle"></i>
-                <strong>Warning:</strong> {{ remaining_attempts }} attempt(s) remaining before lockout
-            </div>
-            {% endif %}
-            
             <form method="POST" class="login-form" id="loginForm">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                
+                <!-- Honeypot field for bots -->
+                <div style="display: none;">
+                    <label for="honeypot">Leave this empty:</label>
+                    <input type="text" id="honeypot" name="honeypot">
+                </div>
+                
                 <div class="form-group">
                     <label for="username"><i class="fas fa-user-shield"></i> Admin Username</label>
                     <input type="text" id="username" name="username" required 
-                           autocomplete="username" autocapitalize="none" autocorrect="off">
+                           autocomplete="username" autocapitalize="none" autocorrect="off"
+                           pattern="[a-zA-Z0-9_]+" title="Only letters, numbers and underscores"
+                           maxlength="50">
                 </div>
                 
                 <div class="form-group">
                     <label for="password"><i class="fas fa-key"></i> Admin Password</label>
                     <div style="position: relative;">
                         <input type="password" id="password" name="password" required 
-                               autocomplete="current-password" minlength="8">
+                               autocomplete="current-password" minlength="8" maxlength="128">
                         <button type="button" id="togglePassword" 
                                 style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: #666; cursor: pointer;">
                             <i class="fas fa-eye"></i>
                         </button>
                     </div>
-                    <small style="color: #666; font-size: 12px;">Minimum 8 characters, including uppercase, lowercase, and numbers</small>
-                </div>
-                
-                <div class="form-group">
-                    <div class="g-recaptcha" data-sitekey="your_recaptcha_site_key_here"></div>
+                    <small style="color: #666; font-size: 12px;">Minimum 8 characters</small>
                 </div>
                 
                 <button type="submit" class="btn-login" id="loginButton">
@@ -116,13 +115,12 @@
             
             <div class="login-footer">
                 <p><i class="fas fa-info-circle"></i> <strong>Security Notice:</strong> All login attempts are logged and monitored.</p>
-                <p><i class="fas fa-history"></i> Session automatically expires after {{ config.SESSION_TIMEOUT_MINUTES }} minutes of inactivity.</p>
+                <p><i class="fas fa-history"></i> Session automatically expires after {{ config.SESSION_TIMEOUT_MINUTES if config else 15 }} minutes of inactivity.</p>
                 <p><i class="fas fa-ip"></i> Your IP: <code>{{ request.remote_addr }}</code></p>
             </div>
         </div>
     </div>
     
-    <script src="https://www.google.com/recaptcha/api.js" async defer></script>
     <script>
         // Toggle password visibility
         document.getElementById('togglePassword').addEventListener('click', function() {
@@ -146,17 +144,21 @@
             button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Authenticating...';
             button.disabled = true;
             
-            // Add small delay to show loading state
-            setTimeout(() => {
-                button.disabled = false;
-            }, 3000);
+            // Check honeypot
+            const honeypot = document.getElementById('honeypot');
+            if (honeypot && honeypot.value) {
+                e.preventDefault();
+                // Bot detected, delay response
+                setTimeout(() => {
+                    button.innerHTML = '<i class="fas fa-sign-in-alt"></i> Authentication Failed';
+                    button.disabled = false;
+                }, 3000);
+                return;
+            }
         });
         
         // Auto-focus username field
         document.getElementById('username').focus();
-        
-        // Log security events
-        console.log('🔒 Admin login page loaded with security features');
     </script>
 </body>
 </html>
