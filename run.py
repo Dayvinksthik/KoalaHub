@@ -1,11 +1,49 @@
-import sys
-print("Python version:", sys.version)
 import os
 import sys
 import threading
 import time
 import signal
 import atexit
+
+# Check Python version
+PYTHON_VERSION = sys.version_info
+if PYTHON_VERSION.major == 3 and PYTHON_VERSION.minor >= 13:
+    print(f"⚠️  Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor} detected")
+    
+    # Mock audioop module if not present
+    try:
+        import audioop
+    except ImportError:
+        print("⚠️  Creating mock audioop module")
+        import types
+        audioop = types.ModuleType('audioop')
+        # Add dummy functions
+        audioop.add = lambda *args: b''
+        audioop.adpcm2lin = lambda *args: (b'', 0)
+        audioop.alaw2lin = lambda *args: b''
+        audioop.avg = lambda *args: 0
+        audioop.avgpp = lambda *args: 0
+        audioop.bias = lambda *args: b''
+        audioop.cross = lambda *args: 0
+        audioop.findfactor = lambda *args: 0.0
+        audioop.findfit = lambda *args: (0, 0)
+        audioop.findmax = lambda *args: 0
+        audioop.getsample = lambda *args: 0
+        audioop.lin2adpcm = lambda *args: (b'', 0)
+        audioop.lin2alaw = lambda *args: b''
+        audioop.lin2lin = lambda *args: b''
+        audioop.lin2ulaw = lambda *args: b''
+        audioop.max = lambda *args: 0
+        audioop.maxpp = lambda *args: 0
+        audioop.minmax = lambda *args: (0, 0)
+        audioop.mul = lambda *args: b''
+        audioop.ratecv = lambda *args: (b'', 0, 0)
+        audioop.reverse = lambda *args: b''
+        audioop.rms = lambda *args: 0
+        audioop.tomono = lambda *args: b''
+        audioop.tostereo = lambda *args: b''
+        audioop.ulaw2lin = lambda *args: b''
+        sys.modules['audioop'] = audioop
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -69,8 +107,9 @@ def run_website():
 def main():
     """Main entry point"""
     print("=" * 60)
-    print("🚀 DISCORD VERIFICATION SYSTEM")
+    print("🚀 DISCORD VERIFICATION & SECURITY SYSTEM")
     print("=" * 60)
+    logger.info(f"✅ Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor}.{PYTHON_VERSION.micro}")
     
     # Register cleanup handlers
     atexit.register(cleanup)

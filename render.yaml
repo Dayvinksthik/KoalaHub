@@ -2,17 +2,16 @@ services:
   - type: web
     name: discord-verification
     env: python
-    region: virginia
-    plan: starter  # optional, adjust if needed
-    pythonVersion: 3.11  # enforce compatible Python
+    region: oregon
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: python run.py
+    startCommand: |
+      gunicorn --workers 4 --threads 2 --bind 0.0.0.0:$PORT website.wsgi:app
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: FLASK_ENV
         value: production
-      - key: WEBSITE_URL
-        value: http://koalahub.onrender.com
     healthCheckPath: /health
     autoDeploy: true
