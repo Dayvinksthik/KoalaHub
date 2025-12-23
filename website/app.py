@@ -1,6 +1,6 @@
 """
 Discord Verification System - Website Application
-Enhanced with maximum security features
+Simplified version without flask_wtf for Python 3.13 compatibility
 """
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g, abort
@@ -8,9 +8,6 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_talisman import Talisman
-from flask_wtf import FlaskForm
-from wtforms import StringField, PasswordField
-from wtforms.validators import DataRequired, Length, Regexp
 import requests
 import json
 from datetime import datetime, timedelta
@@ -39,7 +36,7 @@ from utils.rate_limiter import rate_limiter
 from database.connection import db_manager
 
 def create_app():
-    """Create and configure Flask application with maximum security"""
+    """Create and configure Flask application"""
     app = Flask(__name__, template_folder='templates', static_folder='static')
     
     # ============ SECURITY CONFIGURATION ============
@@ -48,14 +45,12 @@ def create_app():
     app.config['SESSION_COOKIE_SECURE'] = True
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-    app.config['WTF_CSRF_ENABLED'] = True
-    app.config['WTF_CSRF_SECRET_KEY'] = secrets.token_hex(32)
     
     # Security headers with Talisman
     csp = {
         'default-src': ["'self'"],
         'style-src': ["'self'", "'unsafe-inline'", "https://cdnjs.cloudflare.com"],
-        'script-src': ["'self'", "'unsafe-inline'"],
+        'script-src': ["'self'"],
         'font-src': ["'self'", "https://cdnjs.cloudflare.com"],
         'img-src': ["'self'", "data:", "https:"],
         'connect-src': ["'self'", "https://discord.com"]
@@ -72,54 +67,38 @@ def create_app():
     
     CORS(app, origins=[Config.WEBSITE_URL, "http://localhost:10000"])
     
-    # Rate limiting with stricter limits
+    # Rate limiting
     limiter = Limiter(
         get_remote_address,
         app=app,
         storage_uri="memory://",
-        default_limits=["100 per day", "20 per hour"]
+        default_limits=["200 per day", "50 per hour"]
     )
     
     # ============ SECURITY UTILITIES ============
     
-    class HoneypotField(StringField):
-        """Honeypot field to catch bots"""
-        pass
-    
-    class SecureLoginForm(FlaskForm):
-        """Secure login form with CSRF and honeypot"""
-        username = StringField('Username', validators=[
-            DataRequired(),
-            Length(min=3, max=50),
-            Regexp(r'^[a-zA-Z0-9_]+$', message='Invalid username')
-        ])
-        password = PasswordField('Password', validators=[
-            DataRequired(),
-            Length(min=8, max=128)
-        ])
-        honeypot = HoneypotField('Leave this empty')  # Honeypot for bots
-    
     def get_client_ip():
-        """Get client IP address with security checks"""
+        """Get client IP address"""
         if request.headers.get('CF-Connecting-IP'):
             ip = request.headers['CF-Connecting-IP']
         elif request.headers.get('X-Forwarded-For'):
-            ips = request.headers['X-Forwarded-For'].split(',')
-            ip = ips[0].strip()
+            ip = request.headers['X-Forwarded-For'].split(',')[0].strip()
         elif request.headers.get('X-Real-IP'):
             ip = request.headers['X-Real-IP']
         else:
             ip = request.remote_addr
         
-        # Validate IP format
-        ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
-        if not re.match(ip_pattern, ip):
-            ip = '0.0.0.0'
+        # Security: Sanitize IP
+        if ':' in ip and ip.count(':') == 1:
+            ip = ip.split(':')[0]
+        
+        if ip.startswith('::ffff:'):
+            ip = ip[7:]
         
         return ip
     
     def sanitize_input(text):
-        """Sanitize user input to prevent XSS"""
+        """Sanitize user input"""
         if not text:
             return ''
         
@@ -132,6 +111,12 @@ def create_app():
         # Limit length
         return text[:1000]
     
+    def generate_csrf_token():
+        """Generate CSRF token"""
+        if 'csrf_token' not in session:
+            session['csrf_token'] = secrets.token_hex(32)
+        return session['csrf_token']
+    
     def validate_csrf_token():
         """Validate CSRF token"""
         if request.method in ['POST', 'PUT', 'DELETE', 'PATCH']:
@@ -140,14 +125,8 @@ def create_app():
                 return False
         return True
     
-    def generate_csrf_token():
-        """Generate CSRF token"""
-        if 'csrf_token' not in session:
-            session['csrf_token'] = secrets.token_hex(32)
-        return session['csrf_token']
-    
     def log_security_event(event_type, user_id=None, details="", level="INFO"):
-        """Enhanced security logging"""
+        """Log security event"""
         ip_addr = get_client_ip()
         timestamp = datetime.utcnow()
         
@@ -161,8 +140,7 @@ def create_app():
             "timestamp": timestamp,
             "level": level,
             "endpoint": request.endpoint,
-            "method": request.method,
-            "referrer": request.referrer[:200] if request.referrer else None
+            "method": request.method
         }
         
         # Store in database
@@ -172,43 +150,14 @@ def create_app():
             except Exception as e:
                 logger.error(f"Failed to log security event: {e}")
         
-        # Send alert for critical events
-        if level in ["CRITICAL", "ERROR"]:
-            send_security_alert(event_type, details, ip_addr)
-        
-        logger.info(f"SECURITY {level}: {event_type} - IP: {ip_addr}")
-    
-    def send_security_alert(event_type, details, ip_addr):
-        """Send security alert"""
-        if not Config.ALERTS_WEBHOOK:
-            return
-        
-        embed = {
-            "title": f"🚨 {event_type}",
-            "description": f"**IP:** ||{ip_addr}||\n**Details:** {details[:500]}",
-            "color": 0xff0000,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        try:
-            requests.post(Config.ALERTS_WEBHOOK, json={"embeds": [embed]}, timeout=5)
-        except:
-            pass
-    
-    def check_request_limits(ip_addr):
-        """Check request limits for IP"""
-        key = f"request_limit:{ip_addr}"
-        limit = 100  # Max requests per minute
-        
-        current = db_manager.cache_incr(key)
-        if current == 1:
-            db_manager.cache_set(key, 1, 60)  # Expire in 1 minute
-        
-        if current and current > limit:
-            log_security_event("RATE_LIMIT_EXCEEDED", ip=ip_addr, level="WARNING")
-            return False
-        
-        return True
+        # Local logging
+        log_msg = f"SECURITY {level}: {event_type} - IP: {ip_addr} - Details: {details}"
+        if level == "ERROR":
+            logger.error(log_msg)
+        elif level == "WARNING":
+            logger.warning(log_msg)
+        else:
+            logger.info(log_msg)
     
     def require_csrf(f):
         """CSRF protection decorator"""
@@ -220,15 +169,36 @@ def create_app():
             return f(*args, **kwargs)
         return decorated_function
     
-    def require_authentication(f):
-        """Authentication required decorator"""
+    def admin_required(f):
+        """Admin authentication required decorator"""
         @wraps(f)
         def decorated_function(*args, **kwargs):
             if not session.get('admin_logged_in'):
                 log_security_event("UNAUTHORIZED_ACCESS", ip=get_client_ip(), level="WARNING")
                 return redirect(url_for('admin_login'))
+            
+            # Check session expiration
+            login_time = session.get('login_time')
+            if login_time:
+                login_dt = datetime.fromisoformat(login_time)
+                if datetime.utcnow() - login_dt > timedelta(minutes=Config.SESSION_TIMEOUT_MINUTES):
+                    session.clear()
+                    log_security_event("ADMIN_SESSION_EXPIRED", ip=get_client_ip())
+                    return redirect(url_for('admin_login'))
+            
             return f(*args, **kwargs)
         return decorated_function
+    
+    def verify_admin_credentials(username, password):
+        """Verify admin credentials"""
+        if username != Config.ADMIN_USERNAME:
+            return False
+        
+        if not Config.ADMIN_PASSWORD_HASH:
+            # Fallback to plain text (not recommended)
+            return password == Config.ADMIN_PASSWORD
+        
+        return PasswordManager.verify_password(password, Config.ADMIN_PASSWORD_HASH)
     
     # ============ REQUEST HANDLING ============
     
@@ -241,11 +211,7 @@ def create_app():
         # Generate CSRF token
         generate_csrf_token()
         
-        # Check request limits
-        if not check_request_limits(g.client_ip):
-            abort(429, description="Too many requests")
-        
-        # Log all requests for sensitive endpoints
+        # Log sensitive endpoints
         if request.endpoint in ['admin_login', 'api_verify', 'auth_callback']:
             logger.info(f"Request: {request.method} {request.path} - IP: {g.client_ip}")
     
@@ -261,7 +227,7 @@ def create_app():
         # Log slow requests
         if hasattr(g, 'start_time'):
             duration = time.time() - g.start_time
-            if duration > 2.0:  # Log requests taking more than 2 seconds
+            if duration > 2.0:
                 logger.warning(f"Slow request: {request.path} took {duration:.2f}s - IP: {g.client_ip}")
         
         return response
@@ -277,7 +243,7 @@ def create_app():
     @app.route('/verify')
     @limiter.limit("10 per minute")
     def verify_page():
-        """Verification page with enhanced security"""
+        """Verification page"""
         client_ip = get_client_ip()
         
         # Check for bans
@@ -300,17 +266,11 @@ def create_app():
     @limiter.limit("3 per minute")
     @require_csrf
     def api_verify():
-        """verification API with maximum security"""
+        """verification API"""
         client_ip = get_client_ip()
         
         try:
-            # Check honeypot field
-            if request.form.get('honeypot'):
-                log_security_event("HONEYPOT_TRIGGERED", ip=client_ip, level="WARNING")
-                time.sleep(2)  # Delay to slow down bots
-                return jsonify({"success": False, "error": "Verification failed"}), 400
-            
-            # Validate Discord session
+            # Check Discord session
             discord_user = session.get('discord_user')
             if not discord_user:
                 return jsonify({
@@ -335,9 +295,6 @@ def create_app():
                     "success": False, 
                     "error": "Your IP is banned from this server."
                 }), 403
-            
-            # Check VPN (implement your VPN detection here)
-            # ...
             
             # Save verification
             user_data = {
@@ -379,20 +336,11 @@ def create_app():
     @app.route('/admin/login', methods=['GET', 'POST'])
     @limiter.limit("5 per hour")
     def admin_login():
-        """Admin login with maximum security"""
-        form = SecureLoginForm()
-        
-        if request.method == 'POST' and form.validate():
+        """Admin login"""
+        if request.method == 'POST':
             client_ip = get_client_ip()
-            
-            # Check honeypot
-            if form.honeypot.data:
-                log_security_event("ADMIN_HONEYPOT_TRIGGERED", ip=client_ip, level="WARNING")
-                time.sleep(5)  # Long delay for bots
-                return render_template('admin/login.html', form=form, error="Invalid credentials")
-            
-            username = sanitize_input(form.username.data)
-            password = form.password.data
+            username = sanitize_input(request.form.get('username', ''))
+            password = request.form.get('password', '')
             
             # Rate limiting per IP
             attempts_key = f"admin_login_attempts:{client_ip}"
@@ -400,11 +348,12 @@ def create_app():
             
             if attempts >= Config.MAX_LOGIN_ATTEMPTS:
                 log_security_event("ADMIN_LOGIN_LOCKOUT", ip=client_ip, level="WARNING")
-                return render_template('admin/login.html', form=form, 
-                                     error=f"Too many attempts. Try again in {60 - (time.time() % 60):.0f} seconds")
+                return render_template('admin/login.html', 
+                                     error=f"Too many attempts. Try again in {60 - (time.time() % 60):.0f} seconds",
+                                     csrf_token=generate_csrf_token())
             
             # Verify credentials
-            if username == Config.ADMIN_USERNAME and PasswordManager.verify_password(password, Config.ADMIN_PASSWORD_HASH):
+            if verify_admin_credentials(username, password):
                 # Successful login
                 session['admin_logged_in'] = True
                 session['admin_username'] = username
@@ -430,13 +379,14 @@ def create_app():
                 log_security_event("ADMIN_LOGIN_FAILED", ip=client_ip, 
                                  details=f"Attempts: {attempts}, Remaining: {remaining}", level="WARNING")
                 
-                return render_template('admin/login.html', form=form, 
-                                     error=f"Invalid credentials. {remaining} attempts remaining")
+                return render_template('admin/login.html', 
+                                     error=f"Invalid credentials. {remaining} attempts remaining",
+                                     csrf_token=generate_csrf_token())
         
-        return render_template('admin/login.html', form=form, csrf_token=generate_csrf_token())
+        return render_template('admin/login.html', csrf_token=generate_csrf_token())
     
     @app.route('/admin/dashboard')
-    @require_authentication
+    @admin_required
     def admin_dashboard():
         """Admin dashboard"""
         # Check session expiration
@@ -451,11 +401,11 @@ def create_app():
             session.clear()
             return redirect(url_for('admin_login'))
         
-        return render_template('admin/dashboard.html')
+        return render_template('admin/dashboard.html', csrf_token=generate_csrf_token())
     
     @app.route('/admin/logout')
     def admin_logout():
-        """Admin logout with security cleanup"""
+        """Admin logout"""
         log_security_event("ADMIN_LOGOUT", ip=get_client_ip())
         session.clear()
         return redirect(url_for('admin_login'))
