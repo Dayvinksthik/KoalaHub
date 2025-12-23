@@ -1,6 +1,6 @@
 """
 Discord Verification System - Website Application
-Fixed version with OAuth2 rate limit handling and Python 3.13 compatibility
+Fixed version with admin login and OAuth2 rate limit handling
 """
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g, abort, flash
@@ -178,9 +178,11 @@ def create_app():
 
     @app.after_request
     def after_request(response):
-        duration = time.time() - g.start_time
-        if duration > 2:
-            logger.warning(f"Slow request {request.path} ({duration:.2f}s)")
+        # Fix: Check if start_time exists before accessing it
+        if hasattr(g, 'start_time'):
+            duration = time.time() - g.start_time
+            if duration > 2:
+                logger.warning(f"Slow request {request.path} ({duration:.2f}s)")
         return response
 
     # ================= MAIN ROUTES =================
@@ -242,25 +244,32 @@ def create_app():
             username = sanitize_input(request.form.get("username", ""))
             password = request.form.get("password", "")
             
-            # Rate limiting check
-            ip_addr = get_client_ip()
+            logger.info(f"Login attempt for username: {username}")
+            logger.info(f"Stored hash: {Config.ADMIN_PASSWORD_HASH[:20]}...")
             
             # Check credentials
-            if username == Config.ADMIN_USERNAME and bcrypt.checkpw(
-                password.encode("utf-8"), 
-                Config.ADMIN_PASSWORD_HASH.encode("utf-8")
-            ):
-                session["admin_logged_in"] = True
-                session["admin_username"] = username
-                session["login_time"] = datetime.utcnow().isoformat()
-                session.permanent = True
-                
-                log_security_event("ADMIN_LOGIN_SUCCESS", username)
-                return redirect(url_for("admin_dashboard"))
-            else:
-                log_security_event("ADMIN_LOGIN_FAILED", username, level="WARNING")
+            try:
+                # Verify password against stored hash
+                if (username == Config.ADMIN_USERNAME and 
+                    bcrypt.checkpw(password.encode("utf-8"), 
+                                  Config.ADMIN_PASSWORD_HASH.encode("utf-8"))):
+                    
+                    session["admin_logged_in"] = True
+                    session["admin_username"] = username
+                    session["login_time"] = datetime.utcnow().isoformat()
+                    session.permanent = True
+                    
+                    log_security_event("ADMIN_LOGIN_SUCCESS", username)
+                    return redirect(url_for("admin_dashboard"))
+                else:
+                    log_security_event("ADMIN_LOGIN_FAILED", username, level="WARNING")
+                    return render_template("admin/login.html", 
+                                         error="Invalid credentials. Please check your username and password.")
+                    
+            except Exception as e:
+                logger.error(f"Password verification error: {e}")
                 return render_template("admin/login.html", 
-                                     error="Invalid credentials")
+                                     error="Authentication system error. Please try again.")
         
         return render_template("admin/login.html", csrf_token=generate_csrf_token())
 
@@ -408,6 +417,13 @@ def create_app():
     @app.route("/callback")
     def callback():
         """Discord OAuth callback with rate limit handling"""
+        # IMPORTANT: Skip Discord OAuth until rate limit expires (~20 hours)
+        # Your logs show: "Rate limited by Discord. Retry after 73060s"
+        flash('⚠️ Discord authentication is temporarily disabled due to rate limiting. Please try again in 24 hours.', 'warning')
+        return redirect(url_for('verify'))
+        
+        # Note: Uncomment the following code after the rate limit expires:
+        """
         code = request.args.get("code")
         
         if not code:
@@ -551,6 +567,7 @@ def create_app():
             logger.error(f"❌ Unhandled error in callback: {e}")
             flash('❌ An unexpected error occurred. Please try again.', 'danger')
             return redirect(url_for("verify"))
+        """
 
     @app.route("/auth/logout")
     def auth_logout():

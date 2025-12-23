@@ -61,13 +61,13 @@ class SecurityMonitorBot(commands.Bot):
         # Security monitoring
         self.suspicious_patterns = {
             'phishing_domains': [
-                'discord-gifts\.com',
-                'discord-nitro\.com',
-                'steamcommunity\.gift',
-                'free-nitro\.xyz',
-                'discordapp\.gifts',
-                'discordnitro\.com',
-                'gift-steam\.com'
+                r'discord-gifts\.com',
+                r'discord-nitro\.com',
+                r'steamcommunity\.gift',
+                r'free-nitro\.xyz',
+                r'discordapp\.gifts',
+                r'discordnitro\.com',
+                r'gift-steam\.com'
             ],
             'malicious_keywords': [
                 'free nitro',

@@ -1,6 +1,6 @@
 """
 Main entry point for Discord Verification System
-Optimized for Render.com deployment
+Fixed to run both website and Discord bot reliably
 """
 
 import os
@@ -10,6 +10,7 @@ import time
 import signal
 import atexit
 import subprocess
+import traceback
 
 # Check Python version
 PYTHON_VERSION = sys.version_info
@@ -29,16 +30,28 @@ except ImportError as e:
     raise
 
 # Global variables
+bot_process = None
 bot_thread = None
-app = None
 
 def cleanup():
     """Cleanup resources on exit"""
     logger.info("🧹 Cleaning up resources...")
-    global bot_thread
+    global bot_process, bot_thread
     
+    # Stop bot thread
     if bot_thread and bot_thread.is_alive():
-        logger.info("🛑 Bot thread will terminate with main process...")
+        logger.info("🛑 Stopping Discord bot thread...")
+    
+    # Stop bot process if running
+    if bot_process and bot_process.poll() is None:
+        logger.info("🛑 Stopping Discord bot process...")
+        bot_process.terminate()
+        try:
+            bot_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            bot_process.kill()
+    
+    logger.info("✅ Cleanup complete")
 
 def signal_handler(signum, frame):
     """Handle shutdown signals"""
@@ -47,26 +60,33 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 def run_bot():
-    """Run Discord bot in background"""
+    """Run Discord bot with error handling"""
     logger.info("🤖 Starting Discord bot...")
+    
     try:
+        # Import and run the bot function
+        from bot.bot import run_discord_bot
         run_discord_bot()
+        
     except Exception as e:
         logger.error(f"❌ Bot error: {e}")
-        import traceback
+        logger.error("Bot traceback:")
         traceback.print_exc()
+        
+        # Log additional info
+        logger.info(f"Discord Token present: {'Yes' if Config.DISCORD_TOKEN else 'No'}")
+        logger.info(f"Guild ID: {Config.GUILD_ID}")
+        
+        # Restart after delay
+        logger.info("🔄 Restarting bot in 30 seconds...")
+        time.sleep(30)
+        run_bot()  # Restart recursively
 
-def check_bot_status():
-    """Check if bot is running"""
-    global bot_thread
-    if bot_thread and bot_thread.is_alive():
-        return True
-    return False
-
-def start_bot():
+def start_bot_in_thread():
     """Start the Discord bot in a separate thread"""
     global bot_thread
     logger.info("🚀 Starting Discord bot in background thread...")
+    
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     
@@ -74,7 +94,7 @@ def start_bot():
     logger.info("⏳ Waiting for bot to initialize (5 seconds)...")
     time.sleep(5)
     
-    if check_bot_status():
+    if bot_thread.is_alive():
         logger.info("✅ Discord bot is running in background")
     else:
         logger.warning("⚠️ Discord bot thread may not be running properly")
@@ -84,7 +104,6 @@ def run_website():
     logger.info("🌐 Starting website...")
     
     # Create app
-    global app
     app = create_app()
     
     # Get port from environment
@@ -170,7 +189,7 @@ def main():
         logger.info(f"🌐 Set WEBSITE_URL to: http://localhost:{port}")
     
     # Start Discord bot in background thread
-    start_bot()
+    start_bot_in_thread()
     
     # Start Flask website (this will block)
     run_website()
