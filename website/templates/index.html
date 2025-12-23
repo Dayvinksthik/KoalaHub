@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Verification System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .hero {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 80px 20px;
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .hero h1 {
+            font-size: 3rem;
+            margin-bottom: 20px;
+        }
+        .hero p {
+            font-size: 1.2rem;
+            max-width: 600px;
+            margin: 0 auto 30px;
+            opacity: 0.9;
+        }
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin: 40px 0;
+        }
+        .feature-card {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: transform 0.3s;
+        }
+        .feature-card:hover {
+            transform: translateY(-5px);
+        }
+        .feature-icon {
+            font-size: 3rem;
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+        .cta-button {
+            display: inline-block;
+            background: #5865F2;
+            color: white;
+            padding: 15px 40px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-top: 20px;
+            transition: background 0.3s;
+        }
+        .cta-button:hover {
+            background: #4752C4;
+        }
+        .stats {
+            background: #f8f9fa;
+            padding: 60px 20px;
+            text-align: center;
+            margin-top: 40px;
+        }
+        .stat-item {
+            display: inline-block;
+            margin: 0 30px;
+        }
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #667eea;
+            display: block;
+        }
+        .stat-label {
+            color: #6c757d;
+            font-size: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <h1><i class="fas fa-shield-alt"></i> Discord Verification System</h1>
+        <p>Advanced security and verification system to protect your Discord community from spam, bots, and malicious users.</p>
+        <a href="{{ url_for('verify') }}" class="cta-button">
+            <i class="fab fa-discord"></i> Start Verification
+        </a>
+    </div>
+
+    <div class="container" style="max-width: 1200px; margin: 0 auto; padding: 0 20px;">
+        <div class="features">
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <i class="fas fa-user-shield"></i>
+                </div>
+                <h3>Advanced Security</h3>
+                <p>Real-time monitoring for malicious links, spam prevention, and automated threat detection.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <i class="fas fa-bolt"></i>
+                </div>
+                <h3>Fast Verification</h3>
+                <p>Quick and secure verification process with automatic role assignment.</p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <i class="fas fa-chart-line"></i>
+                </div>
+                <h3>Detailed Analytics</h3>
+                <p>Comprehensive dashboard with security logs and user statistics.</p>
+            </div>
+        </div>
+
+        <div class="info-box" style="margin-top: 40px;">
+            <h3><i class="fas fa-info-circle"></i> How to Verify:</h3>
+            <ol style="padding-left: 20px; margin: 15px 0;">
+                <li style="margin: 10px 0;">Click the "Start Verification" button above</li>
+                <li style="margin: 10px 0;">Connect your Discord account</li>
+                <li style="margin: 10px 0;">Pass security checks (IP, VPN detection)</li>
+                <li style="margin: 10px 0;">Get automatically verified in Discord</li>
+            </ol>
+        </div>
+
+        <div class="stats">
+            <h2 style="margin-bottom: 40px;">System Statistics</h2>
+            <div class="stat-item">
+                <span class="stat-number" id="users-count">0</span>
+                <span class="stat-label">Users Verified</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-number" id="security-events">0</span>
+                <span class="stat-label">Security Events</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-number" id="uptime">100%</span>
+                <span class="stat-label">System Uptime</span>
+            </div>
+        </div>
+    </div>
+
+    <div style="text-align: center; padding: 40px 20px; color: #666; margin-top: 40px;">
+        <p><i class="fas fa-shield-alt"></i> Powered by KoalaHub Security Systems v2.0</p>
+        <p style="font-size: 0.9rem; margin-top: 10px;">
+            <a href="{{ url_for('admin_login') }}" style="color: #667eea; text-decoration: none;">
+                <i class="fas fa-user-shield"></i> Admin Panel
+            </a> | 
+            <a href="/health" style="color: #667eea; text-decoration: none;">
+                <i class="fas fa-heartbeat"></i> System Health
+            </a>
+        </p>
+    </div>
+
+    <script>
+        // Animate statistics
+        function animateCounter(element, target) {
+            let current = 0;
+            const increment = target / 100;
+            const timer = setInterval(() => {
+                current += increment;
+                if (current >= target) {
+                    current = target;
+                    clearInterval(timer);
+                }
+                element.textContent = Math.floor(current);
+            }, 20);
+        }
+
+        // Fetch stats from API
+        async function fetchStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                if (data.verified_users) {
+                    animateCounter(document.getElementById('users-count'), data.verified_users);
+                }
+                if (data.security_events) {
+                    animateCounter(document.getElementById('security-events'), data.security_events);
+                }
+            } catch (error) {
+                console.error('Error fetching stats:', error);
+            }
+        }
+
+        // Load stats when page loads
+        document.addEventListener('DOMContentLoaded', fetchStats);
+    </script>
+</body>
+</html>

@@ -67,7 +67,7 @@
                 </div>
                 <div class="security-indicator">
                     <i class="fas fa-history warning"></i>
-                    <span>Session Timeout: <strong>{{ config.SESSION_TIMEOUT_MINUTES if config else 15 }} minutes</strong></span>
+                    <span>Session Timeout: <strong>15 minutes</strong></span>
                 </div>
             </div>
             
@@ -115,7 +115,7 @@
             
             <div class="login-footer">
                 <p><i class="fas fa-info-circle"></i> <strong>Security Notice:</strong> All login attempts are logged and monitored.</p>
-                <p><i class="fas fa-history"></i> Session automatically expires after {{ config.SESSION_TIMEOUT_MINUTES if config else 15 }} minutes of inactivity.</p>
+                <p><i class="fas fa-history"></i> Session automatically expires after 15 minutes of inactivity.</p>
                 <p><i class="fas fa-ip"></i> Your IP: <code>{{ request.remote_addr }}</code></p>
             </div>
         </div>

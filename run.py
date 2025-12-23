@@ -1,49 +1,19 @@
+"""
+Main entry point for Discord Verification System
+Optimized for Render.com deployment
+"""
+
 import os
 import sys
 import threading
 import time
 import signal
 import atexit
+import subprocess
 
 # Check Python version
 PYTHON_VERSION = sys.version_info
-if PYTHON_VERSION.major == 3 and PYTHON_VERSION.minor >= 13:
-    print(f"⚠️  Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor} detected")
-    
-    # Mock audioop module if not present
-    try:
-        import audioop
-    except ImportError:
-        print("⚠️  Creating mock audioop module")
-        import types
-        audioop = types.ModuleType('audioop')
-        # Add dummy functions
-        audioop.add = lambda *args: b''
-        audioop.adpcm2lin = lambda *args: (b'', 0)
-        audioop.alaw2lin = lambda *args: b''
-        audioop.avg = lambda *args: 0
-        audioop.avgpp = lambda *args: 0
-        audioop.bias = lambda *args: b''
-        audioop.cross = lambda *args: 0
-        audioop.findfactor = lambda *args: 0.0
-        audioop.findfit = lambda *args: (0, 0)
-        audioop.findmax = lambda *args: 0
-        audioop.getsample = lambda *args: 0
-        audioop.lin2adpcm = lambda *args: (b'', 0)
-        audioop.lin2alaw = lambda *args: b''
-        audioop.lin2lin = lambda *args: b''
-        audioop.lin2ulaw = lambda *args: b''
-        audioop.max = lambda *args: 0
-        audioop.maxpp = lambda *args: 0
-        audioop.minmax = lambda *args: (0, 0)
-        audioop.mul = lambda *args: b''
-        audioop.ratecv = lambda *args: (b'', 0, 0)
-        audioop.reverse = lambda *args: b''
-        audioop.rms = lambda *args: 0
-        audioop.tomono = lambda *args: b''
-        audioop.tostereo = lambda *args: b''
-        audioop.ulaw2lin = lambda *args: b''
-        sys.modules['audioop'] = audioop
+print(f"🐍 Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor}.{PYTHON_VERSION.micro}")
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -60,6 +30,7 @@ except ImportError as e:
 
 # Global variables
 bot_thread = None
+app = None
 
 def cleanup():
     """Cleanup resources on exit"""
@@ -76,7 +47,7 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 def run_bot():
-    """Run Discord bot"""
+    """Run Discord bot in background"""
     logger.info("🤖 Starting Discord bot...")
     try:
         run_discord_bot()
@@ -85,32 +56,102 @@ def run_bot():
         import traceback
         traceback.print_exc()
 
+def check_bot_status():
+    """Check if bot is running"""
+    global bot_thread
+    if bot_thread and bot_thread.is_alive():
+        return True
+    return False
+
+def start_bot():
+    """Start the Discord bot in a separate thread"""
+    global bot_thread
+    logger.info("🚀 Starting Discord bot in background thread...")
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Wait for bot to initialize
+    logger.info("⏳ Waiting for bot to initialize (5 seconds)...")
+    time.sleep(5)
+    
+    if check_bot_status():
+        logger.info("✅ Discord bot is running in background")
+    else:
+        logger.warning("⚠️ Discord bot thread may not be running properly")
+
 def run_website():
     """Run Flask website"""
     logger.info("🌐 Starting website...")
     
     # Create app
+    global app
     app = create_app()
     
     # Get port from environment
     port = int(os.environ.get("PORT", 10000))
-    host = os.environ.get("HOST", "0.0.0.0")
+    host = "0.0.0.0"  # Bind to all interfaces
     
-    logger.info(f"🌍 Server will run on: http://{host}:{port}")
+    logger.info("=" * 50)
+    logger.info(f"🌍 Website URL: http://{host}:{port}")
     logger.info(f"🔗 Verification: http://{host}:{port}/verify")
     logger.info(f"👑 Admin: http://{host}:{port}/admin/login")
+    logger.info(f"📊 Health Check: http://{host}:{port}/healthz")
     logger.info("=" * 50)
     
-    # Run Flask app
-    app.run(host=host, port=port, debug=False, use_reloader=False)
+    # Print startup banner
+    print("\n" + "=" * 60)
+    print("🚀 DISCORD VERIFICATION & SECURITY SYSTEM")
+    print("=" * 60)
+    print(f"📅 {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🐍 Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor}.{PYTHON_VERSION.micro}")
+    print(f"🌐 Port: {port}")
+    print(f"🔗 Website: http://{host}:{port}")
+    print("=" * 60 + "\n")
+    
+    # Run Flask app with gunicorn if in production
+    if os.environ.get("FLASK_ENV") == "production":
+        logger.info("🚀 Starting with gunicorn (production mode)")
+        try:
+            # Run gunicorn programmatically
+            from gunicorn.app.base import BaseApplication
+            
+            class FlaskApplication(BaseApplication):
+                def __init__(self, app, options=None):
+                    self.options = options or {}
+                    self.application = app
+                    super().__init__()
+                
+                def load_config(self):
+                    for key, value in self.options.items():
+                        if key in self.cfg.settings and value is not None:
+                            self.cfg.set(key.lower(), value)
+                
+                def load(self):
+                    return self.application
+            
+            options = {
+                "bind": f"{host}:{port}",
+                "workers": 2,
+                "threads": 4,
+                "timeout": 120,
+                "keepalive": 5,
+                "worker_class": "sync",
+                "accesslog": "-",
+                "errorlog": "-"
+            }
+            
+            FlaskApplication(app, options).run()
+            
+        except ImportError:
+            logger.warning("⚠️ Gunicorn not available, falling back to Flask dev server")
+            app.run(host=host, port=port, debug=False, use_reloader=False)
+    else:
+        # Development mode
+        logger.info("🔧 Running in development mode")
+        app.run(host=host, port=port, debug=True, use_reloader=False)
 
 def main():
     """Main entry point"""
-    print("=" * 60)
-    print("🚀 DISCORD VERIFICATION & SECURITY SYSTEM")
-    print("=" * 60)
-    logger.info(f"✅ Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor}.{PYTHON_VERSION.micro}")
-    
     # Register cleanup handlers
     atexit.register(cleanup)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -122,19 +163,14 @@ def main():
         print("Please set DISCORD_TOKEN environment variable")
         sys.exit(1)
     
-    # Set website URL
-    website_url = os.environ.get("WEBSITE_URL", f"http://localhost:{os.environ.get('PORT', 10000)}")
-    os.environ["WEBSITE_URL"] = website_url
-    logger.info(f"🌐 Website URL: {website_url}")
+    # Set website URL if not set
+    if not Config.WEBSITE_URL:
+        port = int(os.environ.get("PORT", 10000))
+        os.environ["WEBSITE_URL"] = f"http://localhost:{port}"
+        logger.info(f"🌐 Set WEBSITE_URL to: http://localhost:{port}")
     
-    # Start Discord bot in separate thread
-    global bot_thread
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    
-    # Wait for bot to initialize
-    logger.info("⏳ Initializing bot (3 seconds)...")
-    time.sleep(3)
+    # Start Discord bot in background thread
+    start_bot()
     
     # Start Flask website (this will block)
     run_website()
