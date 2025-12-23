@@ -1,9 +1,9 @@
 """
 Discord Verification System - Website Application
-Fixed version for Python 3.13 compatibility with all required routes
+Fixed version with OAuth2 rate limit handling and Python 3.13 compatibility
 """
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g, abort
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g, abort, flash
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -26,6 +26,7 @@ import pyotp
 from bson import ObjectId
 import bleach
 import re
+import random
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
@@ -123,7 +124,6 @@ def create_app():
             "method": request.method
         }
 
-        # FIXED LINE: Use "is not None" instead of boolean test
         if db_manager.db is not None:
             try:
                 db_manager.db.security_logs.insert_one(event)
@@ -193,6 +193,12 @@ def create_app():
     @app.route("/verify")
     def verify():
         """Main verification page"""
+        error = request.args.get('error')
+        if error == 'oauth_failed':
+            flash('⚠️ Discord login failed due to rate limiting. Please wait a moment and try again.', 'warning')
+        elif error == 'network_error':
+            flash('🔌 Network error connecting to Discord. Please check your connection.', 'danger')
+        
         return render_template("verify.html", csrf_token=generate_csrf_token())
 
     @app.route("/blocked")
@@ -215,7 +221,6 @@ def create_app():
     def healthz():
         """Kubernetes/container health check endpoint"""
         try:
-            # Simple health check
             return jsonify({
                 "status": "healthy",
                 "timestamp": datetime.utcnow().isoformat(),
@@ -367,8 +372,6 @@ def create_app():
             }), 403
         
         # For demo purposes, return success
-        # In production, you would verify Discord OAuth2 here
-        
         return jsonify({
             "success": True,
             "data": {
@@ -383,20 +386,36 @@ def create_app():
     @app.route("/auth/discord")
     def auth_discord():
         """Start Discord OAuth flow"""
-        # Discord OAuth2 URL
-        discord_auth_url = f"https://discord.com/api/oauth2/authorize?client_id={Config.CLIENT_ID}&redirect_uri={urllib.parse.quote(Config.REDIRECT_URI)}&response_type=code&scope=identify"
+        # Add a small random delay to prevent rapid successive clicks
+        delay_key = f"oauth_delay_{get_client_ip()}"
+        if rate_limiter.is_ip_locked(delay_key):
+            flash('⏳ Please wait a few seconds before trying to login again.', 'warning')
+            return redirect(url_for('verify'))
+        
+        # Lock this IP for 5 seconds to prevent rapid clicks
+        rate_limiter.lock_ip(delay_key, 5)
+        
+        # Discord OAuth2 URL with proper scopes
+        discord_auth_url = (
+            f"https://discord.com/api/oauth2/authorize?"
+            f"client_id={Config.CLIENT_ID}&"
+            f"redirect_uri={urllib.parse.quote(Config.REDIRECT_URI)}&"
+            f"response_type=code&"
+            f"scope=identify"
+        )
         return redirect(discord_auth_url)
 
     @app.route("/callback")
     def callback():
-        """Discord OAuth callback"""
+        """Discord OAuth callback with rate limit handling"""
         code = request.args.get("code")
         
         if not code:
+            flash('❌ No authorization code received from Discord.', 'danger')
             return redirect(url_for("verify"))
         
         try:
-            # Exchange code for token
+            # Prepare token exchange data
             data = {
                 "client_id": Config.CLIENT_ID,
                 "client_secret": Config.CLIENT_SECRET,
@@ -407,44 +426,141 @@ def create_app():
             }
             
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
-            response = requests.post("https://discord.com/api/oauth2/token", data=data, headers=headers)
             
-            if response.status_code != 200:
-                logger.error(f"Discord token exchange failed: {response.text}")
-                return redirect(url_for("verify"))
+            # ================= RETRY LOGIC =================
+            max_retries = 3
+            access_token = None
             
-            token_data = response.json()
-            access_token = token_data["access_token"]
+            for attempt in range(max_retries):
+                try:
+                    # Add jitter to prevent thundering herd
+                    if attempt > 0:
+                        jitter = random.uniform(0.5, 1.5)
+                        wait_time = (2 ** attempt) * jitter  # Exponential backoff with jitter
+                        logger.info(f"Retry attempt {attempt + 1}/{max_retries}, waiting {wait_time:.2f}s")
+                        time.sleep(wait_time)
+                    
+                    # Exchange code for token
+                    response = requests.post(
+                        "https://discord.com/api/oauth2/token", 
+                        data=data, 
+                        headers=headers, 
+                        timeout=10
+                    )
+                    
+                    # Check for Cloudflare rate limiting (Error 1015)
+                    if response.status_code == 200:
+                        # Success!
+                        token_data = response.json()
+                        access_token = token_data.get("access_token")
+                        logger.info(f"✅ Successfully exchanged code for token on attempt {attempt + 1}")
+                        break
+                    
+                    elif response.status_code == 429:  # Rate limited
+                        retry_after = int(response.headers.get('Retry-After', 5))
+                        logger.warning(f"⚠️ Rate limited by Discord. Retry after {retry_after}s (Attempt {attempt + 1}/{max_retries})")
+                        time.sleep(retry_after)
+                        continue
+                    
+                    elif '<title>Access denied | discord.com used Cloudflare' in response.text:
+                        # Cloudflare blocking (Error 1015)
+                        logger.error(f"❌ Cloudflare block detected (Error 1015) on attempt {attempt + 1}")
+                        if attempt < max_retries - 1:
+                            # Wait longer for Cloudflare blocks
+                            time.sleep(10 * (attempt + 1))
+                            continue
+                        else:
+                            logger.error("Max retries reached for Cloudflare blocks")
+                            flash('🛡️ Discord security system is temporarily blocking requests. Please try again in a few minutes.', 'danger')
+                            return redirect(url_for('verify', error='oauth_failed'))
+                    
+                    else:
+                        # Other errors
+                        logger.error(f"❌ Discord token exchange failed: {response.status_code} - {response.text[:200]}")
+                        if attempt < max_retries - 1:
+                            continue
+                        else:
+                            flash('❌ Failed to authenticate with Discord. Please try again.', 'danger')
+                            return redirect(url_for('verify', error='oauth_failed'))
+                            
+                except requests.exceptions.Timeout:
+                    logger.error(f"⏱️ Request timeout on attempt {attempt + 1}")
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        flash('⏱️ Connection to Discord timed out. Please try again.', 'danger')
+                        return redirect(url_for('verify', error='network_error'))
+                        
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"🔌 Network error on attempt {attempt + 1}: {e}")
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        flash('🔌 Network error connecting to Discord. Please check your connection.', 'danger')
+                        return redirect(url_for('verify', error='network_error'))
             
-            # Get user info
-            headers = {"Authorization": f"Bearer {access_token}"}
-            user_response = requests.get("https://discord.com/api/users/@me", headers=headers)
+            # Check if we got the access token
+            if not access_token:
+                flash('❌ Failed to authenticate with Discord after multiple attempts.', 'danger')
+                return redirect(url_for('verify', error='oauth_failed'))
             
-            if user_response.status_code != 200:
-                logger.error(f"Failed to get Discord user: {user_response.text}")
-                return redirect(url_for("verify"))
-            
-            user_data = user_response.json()
-            
-            # Store user in session
-            session["discord_user"] = {
-                "id": str(user_data["id"]),
-                "username": user_data["username"],
-                "discriminator": user_data.get("discriminator", "0"),
-                "full_username": f"{user_data['username']}#{user_data.get('discriminator', '0')}",
-                "avatar": user_data.get("avatar")
-            }
+            # ================= GET USER INFO =================
+            try:
+                headers = {"Authorization": f"Bearer {access_token}"}
+                user_response = requests.get(
+                    "https://discord.com/api/users/@me", 
+                    headers=headers, 
+                    timeout=10
+                )
+                
+                if user_response.status_code != 200:
+                    logger.error(f"❌ Failed to get Discord user: {user_response.status_code} - {user_response.text[:200]}")
+                    flash('❌ Failed to retrieve Discord profile.', 'danger')
+                    return redirect(url_for('verify'))
+                
+                user_data = user_response.json()
+                
+                # Store user in session
+                session["discord_user"] = {
+                    "id": str(user_data["id"]),
+                    "username": user_data["username"],
+                    "discriminator": user_data.get("discriminator", "0"),
+                    "full_username": f"{user_data['username']}#{user_data.get('discriminator', '0')}",
+                    "avatar": user_data.get("avatar"),
+                    "email": user_data.get("email"),
+                    "verified": user_data.get("verified", False)
+                }
+                
+                # Log successful authentication
+                log_security_event(
+                    "DISCORD_OAUTH_SUCCESS", 
+                    user_id=str(user_data["id"]),
+                    details=f"User {user_data['username']} authenticated"
+                )
+                
+                flash('✅ Successfully connected to Discord!', 'success')
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Error fetching user info: {e}")
+                flash('❌ Failed to retrieve Discord profile information.', 'danger')
+                return redirect(url_for('verify'))
             
             return redirect(url_for("verify"))
             
         except Exception as e:
-            logger.error(f"Discord OAuth error: {e}")
+            logger.error(f"❌ Unhandled error in callback: {e}")
+            flash('❌ An unexpected error occurred. Please try again.', 'danger')
             return redirect(url_for("verify"))
 
     @app.route("/auth/logout")
     def auth_logout():
         """Logout Discord user"""
+        user_id = session.get("discord_user", {}).get("id")
+        if user_id:
+            log_security_event("DISCORD_LOGOUT", user_id=user_id)
+        
         session.pop("discord_user", None)
+        flash('👋 Successfully logged out from Discord.', 'info')
         return redirect(url_for("verify"))
 
     # ================= ERROR HANDLERS =================
