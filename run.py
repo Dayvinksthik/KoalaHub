@@ -1,6 +1,6 @@
 """
 Main entry point for Discord Verification System
-Fixed to run both website and Discord bot reliably
+Simplified version that fixes the bot startup issue
 """
 
 import os
@@ -9,7 +9,6 @@ import threading
 import time
 import signal
 import atexit
-import subprocess
 import traceback
 
 # Check Python version
@@ -18,10 +17,8 @@ print(f"🐍 Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor}.{PYTHON_VERSIO
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Import after path setup
 try:
     from website.app import create_app
-    from bot.bot import run_discord_bot
     from config import Config
     from utils.logger import logger
 except ImportError as e:
@@ -29,28 +26,17 @@ except ImportError as e:
     print("Current sys.path:", sys.path)
     raise
 
-# Global variables
-bot_process = None
+# Global bot thread
 bot_thread = None
-bot = None
 
 def cleanup():
     """Cleanup resources on exit"""
     logger.info("🧹 Cleaning up resources...")
-    global bot_process, bot_thread, bot
     
-    # Stop bot
-    if bot:
-        try:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(bot.close())
-            logger.info("✅ Discord bot closed")
-        except Exception as e:
-            logger.error(f"Error closing bot: {e}")
-    
-    logger.info("✅ Cleanup complete")
+    # Signal bot thread to stop if running
+    global bot_thread
+    if bot_thread and bot_thread.is_alive():
+        logger.info("🛑 Bot thread will exit when service stops")
 
 def signal_handler(signum, frame):
     """Handle shutdown signals"""
@@ -58,23 +44,20 @@ def signal_handler(signum, frame):
     cleanup()
     sys.exit(0)
 
-def run_bot():
-    """Run Discord bot with error handling"""
-    logger.info("🤖 Starting Discord bot...")
+def run_discord_bot_safe():
+    """Run Discord bot with proper error handling"""
+    logger.info("🤖 Attempting to start Discord bot...")
     
     try:
-        # Create and run the bot
+        # Import inside function to avoid circular imports
+        import asyncio
         from bot.bot import SecurityMonitorBot
         
-        # Create bot instance
-        bot_instance = SecurityMonitorBot()
-        
-        # Store globally for cleanup
-        global bot
-        bot = bot_instance
+        # Create and run the bot
+        bot = SecurityMonitorBot()
         
         # Run the bot
-        bot_instance.run(Config.DISCORD_TOKEN)
+        bot.run(Config.DISCORD_TOKEN)
         
     except KeyboardInterrupt:
         logger.info("🛑 Bot stopped by user")
@@ -83,34 +66,42 @@ def run_bot():
         logger.error("Bot traceback:")
         traceback.print_exc()
         
-        # Log additional info
-        logger.info(f"Discord Token present: {'Yes' if Config.DISCORD_TOKEN else 'No'}")
-        logger.info(f"Guild ID: {Config.GUILD_ID}")
+        # Log configuration status
+        logger.info(f"📋 Config Check:")
+        logger.info(f"  Discord Token present: {'Yes' if Config.DISCORD_TOKEN else 'No'}")
+        logger.info(f"  Token length: {len(Config.DISCORD_TOKEN) if Config.DISCORD_TOKEN else 0}")
+        logger.info(f"  Token starts with: {Config.DISCORD_TOKEN[:10] if Config.DISCORD_TOKEN else 'N/A'}...")
+        logger.info(f"  Guild ID: {Config.GUILD_ID}")
+        logger.info(f"  Website URL: {Config.WEBSITE_URL}")
         
-        # Restart after delay
-        logger.info("🔄 Restarting bot in 30 seconds...")
-        time.sleep(30)
-        run_bot()  # Restart recursively
+        # Don't restart automatically - let it fail
+        logger.error("❌ Bot failed to start. Please check logs above.")
 
 def start_bot_in_thread():
-    """Start the Discord bot in a separate thread"""
+    """Start Discord bot in background thread"""
     global bot_thread
-    logger.info("🚀 Starting Discord bot in background thread...")
     
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    # Only start if we have a token
+    if not Config.DISCORD_TOKEN:
+        logger.error("❌ No Discord token found! Bot will not start.")
+        logger.error("⚠️  Please set DISCORD_TOKEN environment variable")
+        return
+    
+    logger.info("🚀 Starting Discord bot in background...")
+    
+    bot_thread = threading.Thread(target=run_discord_bot_safe, daemon=True)
     bot_thread.start()
     
-    # Wait for bot to initialize
-    logger.info("⏳ Waiting for bot to initialize (5 seconds)...")
-    time.sleep(10)  # Give more time for bot to start
+    # Give it time to start
+    time.sleep(3)
     
     if bot_thread.is_alive():
-        logger.info("✅ Discord bot is running in background")
+        logger.info("✅ Discord bot thread started successfully")
     else:
-        logger.warning("⚠️ Discord bot thread may not be running properly")
+        logger.warning("⚠️ Discord bot thread may have failed to start")
 
 def run_website():
-    """Run Flask website"""
+    """Run Flask website - this is the main service"""
     logger.info("🌐 Starting website...")
     
     # Create app
@@ -118,30 +109,36 @@ def run_website():
     
     # Get port from environment
     port = int(os.environ.get("PORT", 10000))
-    host = "0.0.0.0"  # Bind to all interfaces
+    host = "0.0.0.0"
     
-    logger.info("=" * 50)
-    logger.info(f"🌍 Website URL: http://{host}:{port}")
-    logger.info(f"🔗 Verification: http://{host}:{port}/verify")
-    logger.info(f"👑 Admin: http://{host}:{port}/admin/login")
-    logger.info(f"📊 Health Check: http://{host}:{port}/healthz")
-    logger.info("=" * 50)
-    
-    # Print startup banner
+    # Print banner
     print("\n" + "=" * 60)
     print("🚀 DISCORD VERIFICATION & SECURITY SYSTEM")
     print("=" * 60)
     print(f"📅 {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"🐍 Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor}.{PYTHON_VERSION.micro}")
     print(f"🌐 Port: {port}")
-    print(f"🔗 Website: http://{host}:{port}")
+    print(f"🔗 Website: https://koalahub.onrender.com")
+    print(f"🤖 Bot Status: {'Will attempt to start' if Config.DISCORD_TOKEN else 'Disabled - No Token'}")
     print("=" * 60 + "\n")
     
-    # Run Flask app with gunicorn if in production
+    # Log important info
+    logger.info("=" * 50)
+    logger.info(f"🌍 Website URL: https://koalahub.onrender.com")
+    logger.info(f"🔗 Verification: https://koalahub.onrender.com/verify")
+    logger.info(f"👑 Admin: https://koalahub.onrender.com/admin/login")
+    logger.info(f"📊 Health Check: https://koalahub.onrender.com/healthz")
+    logger.info("=" * 50)
+    
+    # Try to start bot in background
+    start_bot_in_thread()
+    
+    # Run Flask with gunicorn
+    logger.info("🚀 Starting web server...")
+    
     if os.environ.get("FLASK_ENV") == "production":
-        logger.info("🚀 Starting with gunicorn (production mode)")
+        # Use gunicorn for production
         try:
-            # Run gunicorn programmatically
             from gunicorn.app.base import BaseApplication
             
             class FlaskApplication(BaseApplication):
@@ -160,22 +157,23 @@ def run_website():
             
             options = {
                 "bind": f"{host}:{port}",
-                "workers": 2,
-                "threads": 4,
+                "workers": 1,  # Use 1 worker to save memory
+                "threads": 2,
                 "timeout": 120,
                 "keepalive": 5,
                 "worker_class": "sync",
                 "accesslog": "-",
-                "errorlog": "-"
+                "errorlog": "-",
+                "loglevel": "info"
             }
             
             FlaskApplication(app, options).run()
             
         except ImportError:
-            logger.warning("⚠️ Gunicorn not available, falling back to Flask dev server")
+            logger.warning("⚠️ Gunicorn not available, using Flask dev server")
             app.run(host=host, port=port, debug=False, use_reloader=False)
     else:
-        # Development mode
+        # Development
         logger.info("🔧 Running in development mode")
         app.run(host=host, port=port, debug=True, use_reloader=False)
 
@@ -186,22 +184,17 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Validate configuration
-    if not Config.DISCORD_TOKEN:
-        logger.error("❌ ERROR: DISCORD_TOKEN not configured!")
-        print("Please set DISCORD_TOKEN environment variable")
+    # Validate basic config
+    if not Config.MONGODB_URI:
+        logger.error("❌ ERROR: MONGODB_URI not configured!")
         sys.exit(1)
     
-    # Set website URL if not set
-    if not Config.WEBSITE_URL:
-        port = int(os.environ.get("PORT", 10000))
-        os.environ["WEBSITE_URL"] = f"http://localhost:{port}"
-        logger.info(f"🌐 Set WEBSITE_URL to: http://localhost:{port}")
+    # Check if bot can run
+    if not Config.DISCORD_TOKEN:
+        logger.warning("⚠️  WARNING: DISCORD_TOKEN not configured!")
+        logger.warning("⚠️  Discord bot will not start, but website will run")
     
-    # Start Discord bot in background thread
-    start_bot_in_thread()
-    
-    # Start Flask website (this will block)
+    # Run website (blocks forever)
     run_website()
 
 if __name__ == "__main__":

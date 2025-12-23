@@ -56,3 +56,16 @@ class Config:
     # Backup Settings (NEW)
     BACKUP_INTERVAL_HOURS = int(os.getenv('BACKUP_INTERVAL_HOURS', '6'))
     BACKUP_RETENTION_DAYS = int(os.getenv('BACKUP_RETENTION_DAYS', '7'))
+
+    # Validation
+    if not DISCORD_TOKEN:
+        print("⚠️  WARNING: DISCORD_TOKEN not set. Discord bot will not start.")
+    
+    if not MONGODB_URI:
+        raise ValueError("❌ ERROR: MONGODB_URI is required!")
+
+    if not WEBSITE_URL:
+        # Auto-detect for Render
+        port = int(os.getenv('PORT', '10000'))
+        WEBSITE_URL = f"https://koalahub.onrender.com"
+        print(f"🌐 Auto-set WEBSITE_URL to: {WEBSITE_URL}")
