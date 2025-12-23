@@ -123,7 +123,8 @@ def create_app():
             "method": request.method
         }
 
-        if db_manager.db:
+        # FIXED LINE: Use "is not None" instead of boolean test
+        if db_manager.db is not None:
             try:
                 db_manager.db.security_logs.insert_one(event)
             except Exception as e:
@@ -188,10 +189,27 @@ def create_app():
     def home():
         return render_template("index.html", csrf_token=generate_csrf_token())
 
-    @app.route("/health")
+    @app.route('/health')
     @limiter.exempt
     def health():
         return jsonify(status="healthy", timestamp=datetime.utcnow().isoformat())
+
+    @app.route("/healthz")
+    @limiter.exempt
+    def healthz():
+        """Kubernetes/container health check endpoint"""
+        try:
+            # Simple health check
+            return jsonify({
+                "status": "healthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "service": "discord-verification"
+            })
+        except Exception as e:
+            return jsonify({
+                "status": "unhealthy",
+                "error": str(e)
+            }), 500
 
     # ================= ERROR HANDLERS =================
 

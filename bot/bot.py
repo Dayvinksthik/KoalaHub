@@ -152,7 +152,7 @@ class SecurityMonitorBot(commands.Bot):
     
     async def create_indexes(self):
         """Create database indexes"""
-        if not self.db:
+        if self.db is None:
             return
         
         indexes = [
@@ -302,7 +302,7 @@ class SecurityMonitorBot(commands.Bot):
             self.security_events = self.security_events[-1000:]
         
         # Store in database
-        if self.db:
+        if self.db is not None:
             try:
                 await self.db.security_logs.insert_one(event)
             except Exception as e:
@@ -391,7 +391,7 @@ class SecurityMonitorBot(commands.Bot):
                 pass  # User has DMs disabled
             
             # Store in malicious links database
-            if self.db:
+            if self.db is not None:
                 for threat in threats:
                     if 'url' in threat and 'domain' in threat:
                         await self.db.malicious_links.update_one(
@@ -551,7 +551,7 @@ class SecurityMonitorBot(commands.Bot):
     async def cleanup_old_logs(self):
         """Cleanup old security logs"""
         try:
-            if self.db:
+            if self.db is not None:
                 # Keep logs for 30 days
                 cutoff = datetime.utcnow() - timedelta(days=30)
                 
@@ -620,7 +620,7 @@ class SecurityMonitorBot(commands.Bot):
             await interaction.response.defer(ephemeral=True)
             
             try:
-                if self.db:
+                if self.db is not None:
                     # Get security stats for this guild
                     day_ago = datetime.utcnow() - timedelta(days=1)
                     
@@ -717,7 +717,7 @@ class SecurityMonitorBot(commands.Bot):
             # Clean domain
             domain = domain.lower().replace('www.', '').split('/')[0].split(':')[0]
             
-            if self.db:
+            if self.db is not None:
                 await self.db.guild_settings.update_one(
                     {"guild_id": str(interaction.guild.id)},
                     {"$addToSet": {"allowed_domains": domain}},
@@ -743,7 +743,7 @@ class SecurityMonitorBot(commands.Bot):
             """Add domain to block list"""
             domain = domain.lower().replace('www.', '').split('/')[0].split(':')[0]
             
-            if self.db:
+            if self.db is not None:
                 await self.db.guild_settings.update_one(
                     {"guild_id": str(interaction.guild.id)},
                     {"$addToSet": {"blocked_domains": domain}},
@@ -787,7 +787,7 @@ class SecurityMonitorBot(commands.Bot):
                 cutoff = datetime.utcnow() - timedelta(days=days)
                 query["timestamp"] = {"$gte": cutoff}
                 
-                if self.db:
+                if self.db is not None:
                     cursor = self.db.security_logs.find(query) \
                         .sort("timestamp", -1) \
                         .limit(limit)
@@ -889,7 +889,7 @@ class SecurityMonitorBot(commands.Bot):
                 await user.add_roles(verified_role, reason=f"Force verified by {interaction.user}")
                 
                 # Update database
-                if self.db:
+                if self.db is not None:
                     await self.db.users.update_one(
                         {"discord_id": str(user.id)},
                         {"$set": {
@@ -949,7 +949,7 @@ class SecurityMonitorBot(commands.Bot):
             embed.add_field(name="Security Events", value=self.performance_metrics["security_events"], inline=True)
             embed.add_field(name="Blocks", value=self.performance_metrics["malicious_blocks"], inline=True)
             
-            if self.db:
+            if self.db is not None:
                 total_users = await self.db.users.count_documents({})
                 verified_users = await self.db.users.count_documents({"verified_at": {"$exists": True}})
                 

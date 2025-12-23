@@ -6,8 +6,8 @@ Flask-Limiter==3.5.1
 Flask-Talisman==1.1.0
 gunicorn==20.1.0
 
-# Database
-pymongo==4.6.0
+# Database - Use older PyMongo version for compatibility
+pymongo==4.5.0  # Downgraded for Python 3.13 compatibility
 redis==5.0.1
 motor==3.3.2
 
@@ -21,7 +21,6 @@ pyotp==2.9.0
 qrcode==7.4.2
 psutil==5.9.7
 humanize==4.8.0
-schedule==1.2.0
 
 # Security
 dnspython==2.4.2
@@ -32,11 +31,5 @@ bleach==6.1.0
 Werkzeug==2.3.7
 Jinja2==3.1.2
 
-# Remove Flask-WTF for now
-# Flask-WTF==1.2.1
-# WTForms==3.1.2
-# email-validator==2.1.0
-
-# Compatibility
-setuptools==80.9.0
-packaging==25.0
+# Remove incompatible packages
+# schedule==1.2.0  # Remove this line

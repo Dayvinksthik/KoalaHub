@@ -13,5 +13,6 @@ services:
         value: 3.11.9
       - key: FLASK_ENV
         value: production
-    healthCheckPath: /health
+    healthCheckPath: /healthz
+    healthCheckTimeout: 10
     autoDeploy: true
