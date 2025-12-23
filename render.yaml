@@ -7,7 +7,7 @@ services:
       pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: |
-      gunicorn --workers 4 --threads 2 --bind 0.0.0.0:$PORT website.wsgi:app
+      python run.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
