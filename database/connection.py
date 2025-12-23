@@ -61,19 +61,9 @@ class DatabaseManager:
             
             self.mongo_client = MongoClient(
                 connection_string,
-                maxPoolSize=200,           # Maximum connections in pool
-                minPoolSize=20,            # Minimum connections in pool
-                maxIdleTimeMS=60000,       # Close idle connections after 60s
-                socketTimeoutMS=10000,     # Socket timeout
-                connectTimeoutMS=10000,    # Connection timeout
-                serverSelectionTimeoutMS=10000,  # Server selection timeout
-                waitQueueTimeoutMS=10000,  # Wait queue timeout
-                retryWrites=True,
-                retryReads=True,
-                w="majority",              # Write concern
-                journal=True,
-                heartbeatFrequencyMS=10000,  # Heartbeat frequency
-                serverMonitoringMode="stream"  # Stream monitoring
+                maxPoolSize=100,
+                minPoolSize=10,
+                serverSelectionTimeoutMS=5000
             )
             
             # Test connection
@@ -93,7 +83,7 @@ class DatabaseManager:
             # Create indexes
             self._create_indexes()
             
-            logger.info("✅ MongoDB connected with advanced connection pooling")
+            logger.info("✅ MongoDB connected with connection pooling")
             
         except ConnectionFailure as e:
             logger.error(f"❌ MongoDB connection failed: {e}")
@@ -102,21 +92,16 @@ class DatabaseManager:
             self.connection_stats["mongodb"]["status"] = "disconnected"
     
     def _connect_redis(self):
-        """Connect to Redis for caching with connection pooling"""
+        """Connect to Redis for caching"""
         try:
             redis_url = getattr(Config, 'REDIS_URL', None)
             if redis_url:
-                # Use connection pooling
-                self.redis_client = redis.ConnectionPool.from_url(
+                self.redis_client = redis.Redis.from_url(
                     redis_url,
-                    max_connections=50,
                     decode_responses=True,
                     socket_timeout=5,
-                    socket_connect_timeout=5,
-                    retry_on_timeout=True,
-                    health_check_interval=30
-                ).connection()
-                
+                    socket_connect_timeout=5
+                )
                 self.redis_client.ping()
                 self.cache_enabled = True
                 
@@ -130,7 +115,7 @@ class DatabaseManager:
                     "used_memory": redis_info.get('used_memory_human', 'unknown')
                 }
                 
-                logger.info("✅ Redis connected with connection pooling")
+                logger.info("✅ Redis connected")
             else:
                 logger.info("ℹ️ Redis not configured, using memory cache")
                 self.cache_enabled = False
@@ -142,7 +127,8 @@ class DatabaseManager:
     
     def _create_indexes(self):
         """Create comprehensive database indexes for performance"""
-        if not self.db:
+        # FIX: Use explicit None check for PyMongo database object
+        if self.db is None:
             return
         
         try:
@@ -178,48 +164,38 @@ class DatabaseManager:
             self.db.verification_logs.create_index([("hashed_ip", ASCENDING)], background=True)
             
             # Temp bans
-            self.db.temp_bans.create_index([("ip_address", ASCENDING)], background=True)
-            self.db.temp_bans.create_index([("expires_at", ASCENDING)], background=True)
+            if hasattr(self.db, 'temp_bans'):
+                self.db.temp_bans.create_index([("ip_address", ASCENDING)], background=True)
+                self.db.temp_bans.create_index([("expires_at", ASCENDING)], background=True)
             
             # VPN logs
-            self.db.vpn_logs.create_index([("detected_at", DESCENDING)], background=True)
-            self.db.vpn_logs.create_index([("ip_address", ASCENDING)], background=True)
-            self.db.vpn_logs.create_index([("discord_id", ASCENDING)], background=True)
+            if hasattr(self.db, 'vpn_logs'):
+                self.db.vpn_logs.create_index([("detected_at", DESCENDING)], background=True)
+                self.db.vpn_logs.create_index([("ip_address", ASCENDING)], background=True)
+                self.db.vpn_logs.create_index([("discord_id", ASCENDING)], background=True)
             
             # Warnings
-            self.db.warnings.create_index([("timestamp", DESCENDING)], background=True)
-            self.db.warnings.create_index([("user_id", ASCENDING)], background=True)
-            self.db.warnings.create_index([("guild_id", ASCENDING)], background=True)
+            if hasattr(self.db, 'warnings'):
+                self.db.warnings.create_index([("timestamp", DESCENDING)], background=True)
+                self.db.warnings.create_index([("user_id", ASCENDING)], background=True)
+                self.db.warnings.create_index([("guild_id", ASCENDING)], background=True)
             
             # Settings
-            self.db.settings.create_index([("key", ASCENDING)], unique=True, background=True)
+            if hasattr(self.db, 'settings'):
+                self.db.settings.create_index([("key", ASCENDING)], unique=True, background=True)
             
             # Payments (for future use)
-            self.db.payments.create_index([("payment_id", ASCENDING)], unique=True, background=True)
-            self.db.payments.create_index([("user_id", ASCENDING)], background=True)
-            self.db.payments.create_index([("status", ASCENDING)], background=True)
-            self.db.payments.create_index([("created_at", DESCENDING)], background=True)
+            if hasattr(self.db, 'payments'):
+                self.db.payments.create_index([("payment_id", ASCENDING)], unique=True, background=True)
+                self.db.payments.create_index([("user_id", ASCENDING)], background=True)
+                self.db.payments.create_index([("status", ASCENDING)], background=True)
+                self.db.payments.create_index([("created_at", DESCENDING)], background=True)
             
             # Audit logs
-            self.db.audit_logs.create_index([("timestamp", DESCENDING)], background=True)
-            self.db.audit_logs.create_index([("admin_id", ASCENDING)], background=True)
-            self.db.audit_logs.create_index([("action", ASCENDING)], background=True)
-            
-            # Compound indexes for common queries
-            self.db.users.create_index([
-                ("is_banned", ASCENDING),
-                ("verified_at", DESCENDING)
-            ], background=True)
-            
-            self.db.users.create_index([
-                ("verified_at", ASCENDING),
-                ("role_added", ASCENDING)
-            ], background=True)
-            
-            self.db.security_logs.create_index([
-                ("timestamp", DESCENDING),
-                ("level", ASCENDING)
-            ], background=True)
+            if hasattr(self.db, 'audit_logs'):
+                self.db.audit_logs.create_index([("timestamp", DESCENDING)], background=True)
+                self.db.audit_logs.create_index([("admin_id", ASCENDING)], background=True)
+                self.db.audit_logs.create_index([("action", ASCENDING)], background=True)
             
             logger.info("✅ Database indexes created for optimal performance")
             
@@ -230,7 +206,7 @@ class DatabaseManager:
     
     def cache_get(self, key: str):
         """Get value from cache with metrics"""
-        if not self.cache_enabled or not self.redis_client:
+        if not self.cache_enabled or self.redis_client is None:
             return None
         
         start_time = time.time()
@@ -252,7 +228,7 @@ class DatabaseManager:
     
     def cache_set(self, key: str, value, expire: int = 300):
         """Set value in cache with expiration"""
-        if not self.cache_enabled or not self.redis_client:
+        if not self.cache_enabled or self.redis_client is None:
             return False
         
         start_time = time.time()
@@ -269,7 +245,7 @@ class DatabaseManager:
     
     def cache_delete(self, key: str):
         """Delete value from cache"""
-        if not self.cache_enabled or not self.redis_client:
+        if not self.cache_enabled or self.redis_client is None:
             return False
         
         start_time = time.time()
@@ -284,7 +260,7 @@ class DatabaseManager:
     
     def cache_incr(self, key: str, amount: int = 1):
         """Increment cached counter"""
-        if not self.cache_enabled or not self.redis_client:
+        if not self.cache_enabled or self.redis_client is None:
             return None
         
         start_time = time.time()
@@ -296,33 +272,20 @@ class DatabaseManager:
         finally:
             self._record_query_time(time.time() - start_time)
     
-    def cache_keys(self, pattern: str = "*"):
-        """Get cache keys matching pattern"""
-        if not self.cache_enabled or not self.redis_client:
-            return []
-        
-        start_time = time.time()
-        try:
-            return self.redis_client.keys(pattern)
-        except Exception as e:
-            logger.warning(f"Cache keys error for pattern {pattern}: {e}")
-            return []
-        finally:
-            self._record_query_time(time.time() - start_time)
-    
     # ============ QUERY METHODS WITH CACHING ============
     
     def get_user(self, discord_id: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
         """Get user with optional caching"""
+        # FIX: Check if db is None
+        if self.db is None:
+            return None
+        
         cache_key = f"user:{discord_id}"
         
         if use_cache:
             cached = self.cache_get(cache_key)
             if cached:
                 return cached
-        
-        if not self.db:
-            return None
         
         start_time = time.time()
         try:
@@ -341,7 +304,7 @@ class DatabaseManager:
     
     def get_user_by_ip(self, ip_address: str) -> Optional[Dict[str, Any]]:
         """Get user by IP address"""
-        if not self.db:
+        if self.db is None:
             return None
         
         start_time = time.time()
@@ -355,15 +318,15 @@ class DatabaseManager:
     
     def is_ip_banned(self, ip_address: str, use_cache: bool = True) -> bool:
         """Check if IP is banned with caching"""
+        if self.db is None:
+            return False
+        
         cache_key = f"banned_ip:{ip_address}"
         
         if use_cache:
             cached = self.cache_get(cache_key)
             if cached is not None:
                 return cached
-        
-        if not self.db:
-            return False
         
         start_time = time.time()
         try:
@@ -388,7 +351,7 @@ class DatabaseManager:
     
     def add_user(self, user_data: Dict[str, Any]) -> bool:
         """Add or update user"""
-        if not self.db:
+        if self.db is None:
             return False
         
         start_time = time.time()
@@ -424,7 +387,7 @@ class DatabaseManager:
                username: str = None, reason: str = "Manual ban", 
                banned_by: str = "System") -> bool:
         """Ban IP address"""
-        if not self.db:
+        if self.db is None:
             return False
         
         start_time = time.time()
@@ -467,7 +430,7 @@ class DatabaseManager:
     
     def unban_ip(self, ip_address: str) -> bool:
         """Unban IP address"""
-        if not self.db:
+        if self.db is None:
             return False
         
         start_time = time.time()
@@ -489,7 +452,7 @@ class DatabaseManager:
     
     def add_verification_log(self, log_data: Dict[str, Any]) -> bool:
         """Add verification log"""
-        if not self.db:
+        if self.db is None:
             return False
         
         start_time = time.time()
@@ -504,7 +467,7 @@ class DatabaseManager:
     
     def add_security_log(self, log_data: Dict[str, Any]) -> bool:
         """Add security log"""
-        if not self.db:
+        if self.db is None:
             return False
         
         start_time = time.time()
@@ -521,15 +484,15 @@ class DatabaseManager:
     
     def get_stats(self, use_cache: bool = True) -> Dict[str, Any]:
         """Get system statistics with caching"""
+        if self.db is None:
+            return {}
+        
         cache_key = "system_stats"
         
         if use_cache:
             cached = self.cache_get(cache_key)
             if cached:
                 return cached
-        
-        if not self.db:
-            return {}
         
         start_time = time.time()
         try:
@@ -538,16 +501,27 @@ class DatabaseManager:
                 "verified_users": self.db.users.count_documents({"verified_at": {"$exists": True}}),
                 "banned_ips": self.db.banned_ips.count_documents({"is_active": True}),
                 "today_verifications": self._get_today_verifications(),
-                "vpn_detections": self.db.vpn_logs.count_documents({}),
+                "vpn_detections": 0,  # Default if collection doesn't exist
                 "security_events_today": self._get_today_security_events(),
-                "active_temp_bans": self.db.temp_bans.count_documents({
-                    "expires_at": {"$gt": datetime.utcnow()}
-                }),
+                "active_temp_bans": 0,  # Default if collection doesn't exist
                 "database_size": self._get_database_size(),
                 "cache_enabled": self.cache_enabled,
                 "query_performance": self.get_performance_metrics(),
                 "uptime": int(time.time() - self._start_time)
             }
+            
+            # Check for optional collections
+            try:
+                stats["vpn_detections"] = self.db.vpn_logs.count_documents({})
+            except:
+                pass
+            
+            try:
+                stats["active_temp_bans"] = self.db.temp_bans.count_documents({
+                    "expires_at": {"$gt": datetime.utcnow()}
+                })
+            except:
+                pass
             
             if use_cache:
                 # Cache stats for 1 minute
@@ -586,14 +560,18 @@ class DatabaseManager:
         """Get database collection sizes"""
         try:
             sizes = {}
-            for collection_name in ["users", "banned_ips", "security_logs", "verification_logs"]:
-                count = self.db[collection_name].count_documents({})
-                # Approximate size in KB (rough estimate)
-                approx_size = count * 0.5  # 0.5KB per document avg
-                sizes[collection_name] = {
-                    "count": count,
-                    "size_kb": round(approx_size, 2)
-                }
+            collections = ["users", "banned_ips", "security_logs", "verification_logs"]
+            for collection_name in collections:
+                try:
+                    count = self.db[collection_name].count_documents({})
+                    # Approximate size in KB (rough estimate)
+                    approx_size = count * 0.5  # 0.5KB per document avg
+                    sizes[collection_name] = {
+                        "count": count,
+                        "size_kb": round(approx_size, 2)
+                    }
+                except:
+                    pass
             return sizes
         except:
             return {}
@@ -617,7 +595,7 @@ class DatabaseManager:
         }
         
         # Add cache stats if Redis is enabled
-        if self.cache_enabled and self.redis_client:
+        if self.cache_enabled and self.redis_client is not None:
             try:
                 redis_info = self.redis_client.info()
                 metrics["redis"] = {
@@ -642,164 +620,6 @@ class DatabaseManager:
         self._query_count = 0
         self._query_total_time = 0
     
-    # ============ BATCH OPERATIONS ============
-    
-    def bulk_update_users(self, updates: List[Dict[str, Any]]) -> bool:
-        """Bulk update users for performance"""
-        if not self.db or not updates:
-            return False
-        
-        start_time = time.time()
-        try:
-            bulk_operations = []
-            cache_keys_to_delete = []
-            
-            for update in updates:
-                discord_id = update.get("discord_id")
-                if discord_id:
-                    bulk_operations.append({
-                        "updateOne": {
-                            "filter": {"discord_id": discord_id},
-                            "update": {"$set": update},
-                            "upsert": True
-                        }
-                    })
-                    cache_keys_to_delete.append(f"user:{discord_id}")
-            
-            if bulk_operations:
-                result = self.db.users.bulk_write(bulk_operations)
-                
-                # Clear cache for updated users
-                for key in cache_keys_to_delete:
-                    self.cache_delete(key)
-                
-                logger.info(f"Bulk updated {result.modified_count} users, inserted {result.upserted_count}")
-                return True
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"Bulk update error: {e}")
-            return False
-        finally:
-            self._record_query_time(time.time() - start_time)
-    
-    # ============ MAINTENANCE METHODS ============
-    
-    def cleanup_old_data(self, days_to_keep: int = 30):
-        """Cleanup old data from database"""
-        if not self.db:
-            return 0
-        
-        try:
-            total_deleted = 0
-            cutoff = datetime.utcnow() - timedelta(days=days_to_keep)
-            
-            # Clean old security logs
-            result = self.db.security_logs.delete_many({
-                "timestamp": {"$lt": cutoff},
-                "level": {"$ne": "CRITICAL"}  # Keep critical logs longer
-            })
-            total_deleted += result.deleted_count
-            
-            # Clean old verification logs
-            result = self.db.verification_logs.delete_many({
-                "timestamp": {"$lt": cutoff},
-                "success": True  # Keep failed attempts longer
-            })
-            total_deleted += result.deleted_count
-            
-            # Clean old temp bans (keep for 7 days)
-            temp_cutoff = datetime.utcnow() - timedelta(days=7)
-            result = self.db.temp_bans.delete_many({
-                "expires_at": {"$lt": temp_cutoff}
-            })
-            total_deleted += result.deleted_count
-            
-            logger.info(f"🧹 Cleaned {total_deleted} old database records")
-            return total_deleted
-            
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
-            return 0
-    
-    def optimize_database(self):
-        """Run database optimization tasks"""
-        if not self.db:
-            return False
-        
-        try:
-            # Rebuild indexes
-            for collection_name in ["users", "banned_ips", "security_logs", "verification_logs"]:
-                try:
-                    self.db[collection_name].reindex()
-                    logger.info(f"Rebuilt indexes for {collection_name}")
-                except:
-                    pass
-            
-            # Compact collections if needed
-            # Note: This requires admin privileges in production
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Optimization error: {e}")
-            return False
-    
-    # ============ BACKUP METHODS ============
-    
-    def create_backup(self, backup_path: str = None) -> Optional[str]:
-        """Create database backup"""
-        if not self.db:
-            return None
-        
-        try:
-            import os
-            import json
-            from datetime import datetime
-            
-            if not backup_path:
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                backup_path = f"backups/backup_{timestamp}"
-            
-            os.makedirs(os.path.dirname(backup_path), exist_ok=True)
-            
-            backup_data = {
-                "timestamp": datetime.utcnow().isoformat(),
-                "collections": {}
-            }
-            
-            # Backup each collection
-            collections = ["users", "banned_ips", "security_logs", "verification_logs", "settings"]
-            for collection_name in collections:
-                try:
-                    documents = list(self.db[collection_name].find({}))
-                    
-                    # Convert ObjectId to string
-                    for doc in documents:
-                        if '_id' in doc:
-                            doc['_id'] = str(doc['_id'])
-                    
-                    backup_data["collections"][collection_name] = {
-                        "count": len(documents),
-                        "data": documents
-                    }
-                    
-                except Exception as e:
-                    logger.error(f"Failed to backup {collection_name}: {e}")
-            
-            # Save backup
-            backup_file = f"{backup_path}.json"
-            with open(backup_file, 'w', encoding='utf-8') as f:
-                json.dump(backup_data, f, indent=2, default=str)
-            
-            logger.info(f"✅ Backup created: {backup_file}")
-            return backup_file
-            
-        except Exception as e:
-            logger.error(f"Backup creation error: {e}")
-            return None
-    
     # ============ HEALTH CHECK ============
     
     def health_check(self) -> Dict[str, Any]:
@@ -811,7 +631,7 @@ class DatabaseManager:
         }
         
         # Check MongoDB
-        if self.mongo_client:
+        if self.mongo_client is not None:
             try:
                 start = time.time()
                 self.mongo_client.admin.command('ping')
@@ -821,7 +641,7 @@ class DatabaseManager:
                 health["mongodb"]["error"] = str(e)
         
         # Check Redis
-        if self.redis_client and self.cache_enabled:
+        if self.redis_client is not None and self.cache_enabled:
             try:
                 start = time.time()
                 self.redis_client.ping()
@@ -837,9 +657,9 @@ class DatabaseManager:
         if mongodb_ok and redis_ok:
             health["overall"] = "healthy"
         elif mongodb_ok:
-            health["overall"] = "degraded"  # MongoDB OK, Redis down
+            health["overall"] = "degraded"
         else:
-            health["overall"] = "unhealthy"  # MongoDB down
+            health["overall"] = "unhealthy"
         
         return health
     
@@ -847,14 +667,14 @@ class DatabaseManager:
         """Close database connections gracefully"""
         logger.info("🛑 Closing database connections...")
         
-        if self.mongo_client:
+        if self.mongo_client is not None:
             try:
                 self.mongo_client.close()
                 logger.info("✅ MongoDB connection closed")
             except Exception as e:
                 logger.error(f"Error closing MongoDB: {e}")
         
-        if self.redis_client:
+        if self.redis_client is not None:
             try:
                 self.redis_client.close()
                 logger.info("✅ Redis connection closed")
