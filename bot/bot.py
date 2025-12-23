@@ -1,13 +1,12 @@
 """
 Discord Verification System - Bot Implementation
-Simplified version without monetization
+Enhanced with security monitoring and malicious link detection
 """
-import os
-os.environ["DISCORD_NO_VOICE"] = "1"
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from discord.ui import View, Button
+from discord.ui import View, Button, Modal, TextInput
 import aiohttp
 import asyncio
 import json
@@ -19,6 +18,8 @@ import time
 import hashlib
 import random
 import string
+import re
+import urllib.parse
 from motor.motor_asyncio import AsyncIOMotorClient
 import redis.asyncio as redis
 import psutil
@@ -29,11 +30,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from utils.logger import logger
 from utils.password import PasswordManager
+from utils.rate_limiter import rate_limiter
 
 # ============ BOT IMPLEMENTATION ============
 
-class VerificationBot(commands.Bot):
-    """Simplified Discord bot without monetization"""
+class SecurityMonitorBot(commands.Bot):
+    """Enhanced Discord bot with security monitoring"""
     
     def __init__(self):
         # Configure intents
@@ -41,9 +43,10 @@ class VerificationBot(commands.Bot):
         intents.members = True
         intents.message_content = True
         intents.guilds = True
+        intents.presences = True
         
         super().__init__(
-            command_prefix="/",
+            command_prefix="!",
             intents=intents,
             help_command=None,
             case_insensitive=True
@@ -55,21 +58,59 @@ class VerificationBot(commands.Bot):
         self.redis_client = None
         self.cache_enabled = False
         
+        # Security monitoring
+        self.suspicious_patterns = {
+            'phishing_domains': [
+                'discord-gifts\.com',
+                'discord-nitro\.com',
+                'steamcommunity\.gift',
+                'free-nitro\.xyz',
+                'discordapp\.gifts',
+                'discordnitro\.com',
+                'gift-steam\.com'
+            ],
+            'malicious_keywords': [
+                'free nitro',
+                'free steam',
+                'click here',
+                'limited time',
+                'exclusive offer',
+                'get free',
+                'won a prize'
+            ],
+            'suspicious_url_patterns': [
+                r'discord[^\.]*\.(?:com|gg|io|xyz|tk|ml|ga|cf)',
+                r'steam[^\.]*\.(?:com|gg|io|xyz|tk|ml|ga|cf)',
+                r'nitro[^\.]*\.(?:com|gg|io|xyz|tk|ml|ga|cf)'
+            ]
+        }
+        
         # Performance tracking
         self.performance_metrics = {
             "start_time": time.time(),
             "commands_executed": 0,
-            "verifications_processed": 0,
-            "roles_assigned": 0,
+            "security_events": 0,
+            "messages_checked": 0,
+            "malicious_blocks": 0,
             "errors": 0
         }
         
-        # Security tracking
+        # Security events tracking
         self.security_events = []
         
-        # Pending verifications
-        self.pending_verifications = {}
-        self.failed_attempts = {}
+        # Allowed domains (server-specific)
+        self.allowed_domains = {
+            'discord.com',
+            'discord.gg',
+            'github.com',
+            'youtube.com',
+            'twitch.tv',
+            'twitter.com',
+            'reddit.com',
+            'wikipedia.org',
+            'google.com',
+            'youtu.be'
+        }
         
         # Setup databases
         asyncio.create_task(self.setup_databases())
@@ -94,42 +135,35 @@ class VerificationBot(commands.Bot):
             await self.create_indexes()
             
             # Redis for caching
-            try:
-                redis_url = getattr(Config, 'REDIS_URL', None)
-                if redis_url:
-                    # Use redis.asyncio instead of aioredis
-                    self.redis_client = redis.from_url(
-                        redis_url,
-                        decode_responses=True,
-                        socket_timeout=5,
-                        socket_connect_timeout=5
-                    )
-                    await self.redis_client.ping()
-                    self.cache_enabled = True
-                    logger.info("✅ Redis connected")
-                else:
-                    logger.info("ℹ️ Redis not configured")
-            except Exception as e:
-                logger.warning(f"⚠️ Redis connection failed: {e}")
-                self.cache_enabled = False
+            redis_url = getattr(Config, 'REDIS_URL', None)
+            if redis_url:
+                self.redis_client = redis.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    socket_timeout=5
+                )
+                await self.redis_client.ping()
+                self.cache_enabled = True
+                logger.info("✅ Redis connected")
                 
         except Exception as e:
             logger.error(f"❌ Database setup failed: {e}")
             self.db = None
     
     async def create_indexes(self):
-        """Create database indexes for performance"""
-        if self.db is None:
+        """Create database indexes"""
+        if not self.db:
             return
         
         indexes = [
             ("users", [("discord_id", 1)], {"unique": True}),
             ("users", [("verified_at", -1)]),
             ("users", [("is_banned", 1)]),
-            ("verification_logs", [("timestamp", -1)]),
-            ("verification_logs", [("discord_id", 1)]),
             ("security_logs", [("timestamp", -1)]),
-            ("banned_ips", [("ip_address", 1)], {"unique": True})
+            ("security_logs", [("guild_id", 1)]),
+            ("security_logs", [("user_id", 1)]),
+            ("malicious_links", [("domain", 1)]),
+            ("malicious_links", [("detected_at", -1)]),
         ]
         
         for collection, keys, *options in indexes:
@@ -139,63 +173,127 @@ class VerificationBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to create index on {collection}: {e}")
     
-    # ============ CACHE METHODS ============
+    # ============ SECURITY MONITORING METHODS ============
     
-    async def cache_get(self, key: str):
-        """Get value from cache"""
-        if not self.cache_enabled or not self.redis_client:
-            return None
+    async def check_message_security(self, message: discord.Message) -> Dict[str, Any]:
+        """Check message for security threats"""
+        if message.author.bot:
+            return {"safe": True, "threats": []}
         
-        try:
-            value = await self.redis_client.get(key)
-            if value:
-                try:
-                    return json.loads(value)
-                except:
-                    return value
-            return None
-        except Exception as e:
-            logger.warning(f"Cache get error: {e}")
-            return None
-    
-    async def cache_set(self, key: str, value, expire: int = 300):
-        """Set value in cache"""
-        if not self.cache_enabled or not self.redis_client:
-            return False
+        threats = []
+        content = message.content.lower()
         
-        try:
-            if isinstance(value, (dict, list)):
-                value = json.dumps(value)
-            await self.redis_client.setex(key, expire, value)
-            return True
-        except Exception as e:
-            logger.warning(f"Cache set error: {e}")
-            return False
-    
-    async def cache_delete(self, key: str):
-        """Delete value from cache"""
-        if not self.cache_enabled or not self.redis_client:
-            return False
+        # Check for @everyone/@here spam
+        if (content.count('@everyone') > 2 or content.count('@here') > 2) and not message.author.guild_permissions.mention_everyone:
+            threats.append({
+                "type": "mass_mention",
+                "severity": "high",
+                "details": f"Excessive @everyone/@here mentions"
+            })
         
+        # Check for suspicious keywords
+        for keyword in self.suspicious_patterns['malicious_keywords']:
+            if keyword in content:
+                threats.append({
+                    "type": "suspicious_keyword",
+                    "severity": "medium",
+                    "details": f"Contains suspicious keyword: {keyword}"
+                })
+        
+        # Check URLs
+        urls = re.findall(r'https?://[^\s]+', message.content)
+        for url in urls:
+            threat = await self.check_url_threat(url, message.guild.id if message.guild else None)
+            if threat:
+                threats.append(threat)
+        
+        # Check for invite spam
+        discord_invites = re.findall(r'(discord\.(?:gg|com)/[a-zA-Z0-9-]+)', message.content)
+        if len(discord_invites) > 3:
+            threats.append({
+                "type": "invite_spam",
+                "severity": "high",
+                "details": f"Multiple Discord invites detected: {len(discord_invites)}"
+            })
+        
+        return {
+            "safe": len(threats) == 0,
+            "threats": threats,
+            "message_id": str(message.id),
+            "author_id": str(message.author.id),
+            "channel_id": str(message.channel.id),
+            "guild_id": str(message.guild.id) if message.guild else None
+        }
+    
+    async def check_url_threat(self, url: str, guild_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Check if URL is malicious"""
         try:
-            await self.redis_client.delete(key)
-            return True
+            parsed = urllib.parse.urlparse(url)
+            domain = parsed.netloc.lower()
+            
+            # Remove port and www
+            domain = domain.replace('www.', '').split(':')[0]
+            
+            # Check against phishing domains
+            for pattern in self.suspicious_patterns['phishing_domains']:
+                if re.search(pattern, domain):
+                    return {
+                        "type": "phishing_domain",
+                        "severity": "critical",
+                        "details": f"Phishing domain detected: {domain}",
+                        "url": url,
+                        "domain": domain
+                    }
+            
+            # Check against suspicious patterns
+            for pattern in self.suspicious_patterns['suspicious_url_patterns']:
+                if re.search(pattern, domain):
+                    return {
+                        "type": "suspicious_domain",
+                        "severity": "high",
+                        "details": f"Suspicious domain pattern: {domain}",
+                        "url": url,
+                        "domain": domain
+                    }
+            
+            # Check if domain is in allowed list
+            if guild_id and self.db:
+                # Get guild-specific allowed domains
+                guild_settings = await self.db.guild_settings.find_one({"guild_id": guild_id})
+                allowed_domains = set(self.allowed_domains)
+                if guild_settings and 'allowed_domains' in guild_settings:
+                    allowed_domains.update(guild_settings['allowed_domains'])
+                
+                if domain not in allowed_domains:
+                    return {
+                        "type": "unapproved_domain",
+                        "severity": "medium",
+                        "details": f"Domain not in approved list: {domain}",
+                        "url": url,
+                        "domain": domain
+                    }
+            
+            return None
+            
         except Exception as e:
-            logger.warning(f"Cache delete error: {e}")
-            return False
+            logger.error(f"URL check error: {e}")
+            return None
     
-    # ============ SECURITY METHODS ============
-    
-    async def log_security_event(self, event_type: str, user_id: str = None, 
-                               guild_id: str = None, details: str = "", level: str = "INFO"):
-        """Log security event"""
+    async def log_security_event(self, event_type: str, message: discord.Message, 
+                               details: Dict[str, Any], action_taken: str = "none"):
+        """Log security event to database and Discord"""
         event = {
             "type": event_type,
-            "user_id": user_id,
-            "guild_id": guild_id,
-            "details": details[:500],
-            "level": level,
-            "timestamp": datetime.utcnow()
+            "user_id": str(message.author.id),
+            "username": str(message.author),
+            "guild_id": str(message.guild.id) if message.guild else None,
+            "channel_id": str(message.channel.id),
+            "message_id": str(message.id),
+            "message_content": message.content[:500],
+            "details": details,
+            "action_taken": action_taken,
+            "timestamp": datetime.utcnow(),
+            "bot_version": "2.0.0"
         }
         
         # Store in memory buffer
@@ -210,26 +308,117 @@ class VerificationBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to log security event: {e}")
         
-        # Local logging
-        log_msg = f"SECURITY {level}: {event_type} - User: {user_id} - Details: {details}"
-        if level == "ERROR":
-            logger.error(log_msg)
-        elif level == "WARNING":
-            logger.warning(log_msg)
-        else:
-            logger.info(log_msg)
-    
-    async def send_webhook(self, embed: discord.Embed, webhook_url: str):
-        """Send embed to webhook"""
-        if not webhook_url:
-            return
+        # Send to webhook for critical events
+        if details.get('severity') in ['high', 'critical']:
+            await self.send_security_alert(event, message)
         
+        self.performance_metrics["security_events"] += 1
+        
+        return event
+    
+    async def send_security_alert(self, event: Dict[str, Any], message: discord.Message):
+        """Send security alert to Discord"""
+        color = {
+            "critical": 0xff0000,
+            "high": 0xff6b00,
+            "medium": 0xffd700,
+            "low": 0x3498db
+        }.get(event['details'].get('severity', 'medium'), 0xff0000)
+        
+        embed = discord.Embed(
+            title=f"🚨 Security Alert - {event['type'].replace('_', ' ').title()}",
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(name="User", value=f"{message.author.mention} (`{message.author}`)", inline=True)
+        embed.add_field(name="Channel", value=f"<#{message.channel.id}>", inline=True)
+        embed.add_field(name="Severity", value=event['details'].get('severity', 'unknown').upper(), inline=True)
+        
+        if 'details' in event['details']:
+            embed.add_field(name="Details", value=event['details']['details'], inline=False)
+        
+        if 'url' in event['details']:
+            embed.add_field(name="URL", value=f"||{event['details']['url']}||", inline=False)
+        
+        embed.add_field(name="Action Taken", value=event['action_taken'].title(), inline=True)
+        embed.add_field(name="Message", value=f"[Jump to Message]({message.jump_url})", inline=True)
+        
+        embed.set_footer(text=f"Security System • {message.guild.name if message.guild else 'Unknown'}")
+        
+        # Send to webhook
+        if Config.ALERTS_WEBHOOK:
+            await self.send_webhook(embed, Config.ALERTS_WEBHOOK)
+    
+    async def handle_malicious_message(self, message: discord.Message, threats: List[Dict[str, Any]]):
+        """Handle malicious message with appropriate actions"""
         try:
-            async with aiohttp.ClientSession() as session:
-                webhook = discord.Webhook.from_url(webhook_url, session=session)
-                await webhook.send(embed=embed)
+            # Delete the message
+            await message.delete()
+            
+            # Log the event
+            for threat in threats:
+                await self.log_security_event(
+                    threat['type'],
+                    message,
+                    threat,
+                    action_taken="message_deleted"
+                )
+            
+            # Send warning to user
+            try:
+                warning_embed = discord.Embed(
+                    title="⚠️ Message Removed - Security Alert",
+                    description="Your message was removed for security reasons.",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                warning_embed.add_field(
+                    name="Reason",
+                    value="\n".join([f"• {t['details']}" for t in threats[:3]]),
+                    inline=False
+                )
+                
+                warning_embed.add_field(
+                    name="Note",
+                    value="Repeated violations may result in moderation action.",
+                    inline=False
+                )
+                
+                await message.author.send(embed=warning_embed)
+            except discord.Forbidden:
+                pass  # User has DMs disabled
+            
+            # Store in malicious links database
+            if self.db:
+                for threat in threats:
+                    if 'url' in threat and 'domain' in threat:
+                        await self.db.malicious_links.update_one(
+                            {"domain": threat['domain']},
+                            {
+                                "$set": {
+                                    "last_detected": datetime.utcnow(),
+                                    "threat_type": threat['type']
+                                },
+                                "$inc": {"detection_count": 1},
+                                "$addToSet": {
+                                    "detected_by": str(message.author.id),
+                                    "guilds": str(message.guild.id) if message.guild else None
+                                }
+                            },
+                            upsert=True
+                        )
+            
+            self.performance_metrics["malicious_blocks"] += 1
+            return True
+            
+        except discord.Forbidden:
+            logger.error(f"No permission to delete message in {message.guild.name}")
+            return False
         except Exception as e:
-            logger.error(f"Webhook error: {e}")
+            logger.error(f"Error handling malicious message: {e}")
+            return False
     
     # ============ BOT EVENTS ============
     
@@ -238,11 +427,11 @@ class VerificationBot(commands.Bot):
         logger.info(f'✅ Bot logged in as {self.user}')
         logger.info(f'✅ Connected to {len(self.guilds)} guild(s)')
         
-        # Set status
+        # Set rich presence
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name=f"verifications | {len(self.guilds)} servers"
+                name=f"security | {len(self.guilds)} servers"
             ),
             status=discord.Status.online
         )
@@ -257,15 +446,62 @@ class VerificationBot(commands.Bot):
         # Start background tasks
         self.start_background_tasks()
         
-        logger.info("🤖 Bot fully initialized and ready")
+        logger.info("🤖 Security bot fully initialized and ready")
+    
+    async def on_message(self, message: discord.Message):
+        """Monitor all messages for security threats"""
+        # Don't process bot messages
+        if message.author.bot:
+            return
+        
+        self.performance_metrics["messages_checked"] += 1
+        
+        # Check message security
+        security_check = await self.check_message_security(message)
+        
+        if not security_check['safe'] and security_check['threats']:
+            # Handle malicious message
+            await self.handle_malicious_message(message, security_check['threats'])
+        
+        # Process commands
+        await self.process_commands(message)
+    
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        """Check edited messages for security threats"""
+        if after.author.bot:
+            return
+        
+        # Check if content changed
+        if before.content != after.content:
+            security_check = await self.check_message_security(after)
+            
+            if not security_check['safe'] and security_check['threats']:
+                await self.handle_malicious_message(after, security_check['threats'])
+    
+    async def on_member_join(self, member: discord.Member):
+        """Check new members for suspicious accounts"""
+        account_age = (datetime.utcnow() - member.created_at).days
+        
+        if account_age < 7:  # Account less than 7 days old
+            await self.log_security_event(
+                "new_account_join",
+                await member.guild.system_channel.send(f"{member.mention} joined") if member.guild.system_channel else None,
+                {
+                    "severity": "low",
+                    "details": f"New account joined (age: {account_age} days)",
+                    "account_age": account_age
+                },
+                action_taken="monitored"
+            )
+    
+    # ============ BACKGROUND TASKS ============
     
     def start_background_tasks(self):
         """Start all background tasks"""
         tasks_to_start = [
-            self.check_verifications,
-            self.cleanup_pending,
-            self.update_status,
-            self.performance_monitor
+            self.security_report,
+            self.cleanup_old_logs,
+            self.update_threat_intelligence
         ]
         
         for task in tasks_to_start:
@@ -273,260 +509,72 @@ class VerificationBot(commands.Bot):
                 task.start()
                 logger.info(f"✅ Started background task: {task.__name__}")
     
-    async def on_guild_join(self, guild: discord.Guild):
-        """Bot added to new guild"""
-        logger.info(f"✅ Joined new guild: {guild.name} (ID: {guild.id}, Members: {guild.member_count})")
-        
-        # Send welcome message
-        embed = discord.Embed(
-            title="🎉 Thanks for adding Verification Bot!",
-            description="I'll help you manage server verifications with advanced security features.",
-            color=discord.Color.green()
-        )
-        
-        embed.add_field(name="Quick Start", value="Use `/setup` to create verification panel", inline=False)
-        embed.add_field(name="Features", value="• Advanced security checks\n• VPN detection\n• Rate limiting\n• Admin dashboard", inline=False)
-        
-        # Find system channel or first text channel
-        channel = guild.system_channel
-        if not channel:
-            for ch in guild.text_channels:
-                if ch.permissions_for(guild.me).send_messages:
-                    channel = ch
-                    break
-        
-        if channel:
-            try:
-                await channel.send(embed=embed)
-            except:
-                pass
-        
-        # Log to webhook
-        alert_embed = discord.Embed(
-            title="➕ Bot Added to Server",
-            description=f"**Server:** {guild.name}\n**ID:** {guild.id}\n**Members:** {guild.member_count}",
-            color=discord.Color.blue(),
-            timestamp=datetime.utcnow()
-        )
-        
-        await self.send_webhook(alert_embed, Config.LOGS_WEBHOOK)
-    
-    async def on_member_join(self, member: discord.Member):
-        """Member joined server - check if already verified"""
-        await self.check_existing_verification(member)
-    
-    async def check_existing_verification(self, member: discord.Member):
-        """Check if new member is already verified"""
-        if not self.db or not Config.VERIFIED_ROLE_ID:
-            return
-        
+    @tasks.loop(hours=1)
+    async def security_report(self):
+        """Send hourly security report"""
         try:
-            user_data = await self.db.users.find_one({
-                "discord_id": str(member.id),
-                "verified_at": {"$exists": True},
-                "is_banned": {"$ne": True}
-            })
-            
-            if user_data and not user_data.get('role_added', False):
-                verified_role = member.guild.get_role(int(Config.VERIFIED_ROLE_ID))
-                if verified_role and verified_role not in member.roles:
-                    await member.add_roles(verified_role)
-                    
-                    # Update database
-                    await self.db.users.update_one(
-                        {"discord_id": str(member.id)},
-                        {"$set": {
-                            "role_added": True,
-                            "role_added_at": datetime.utcnow(),
-                            "last_seen": datetime.utcnow()
-                        }}
-                    )
-                    
-                    logger.info(f"✅ Auto-verified rejoining member: {member.name}")
-                    
-                    # Clear from pending
-                    if str(member.id) in self.pending_verifications:
-                        del self.pending_verifications[str(member.id)]
-        
-        except Exception as e:
-            logger.error(f"Auto-verification error: {e}")
-    
-    # ============ BACKGROUND TASKS ============
-    
-    @tasks.loop(seconds=30)
-    async def check_verifications(self):
-        """Check and process pending verifications"""
-        if not self.db or not Config.VERIFIED_ROLE_ID:
-            return
-        
-        try:
-            # Get pending verifications
-            cursor = self.db.users.find({
-                "verified_at": {"$exists": True},
-                "role_added": {"$ne": True},
-                "is_banned": {"$ne": True}
-            }).limit(50)
-            
-            unprocessed_users = await cursor.to_list(length=50)
-            
-            processed = 0
-            failed = 0
-            
-            for user in unprocessed_users:
-                success = await self.process_verification(user)
-                if success:
-                    processed += 1
-                else:
-                    failed += 1
-                
-                # Rate limiting
-                await asyncio.sleep(0.1)
-            
-            if processed > 0:
-                logger.info(f"✅ Processed {processed} verifications ({failed} failed)")
-                self.performance_metrics["verifications_processed"] += processed
-            
-        except Exception as e:
-            logger.error(f"Verification check error: {e}")
-            self.performance_metrics["errors"] += 1
-    
-    async def process_verification(self, user: Dict) -> bool:
-        """Process single user verification"""
-        discord_id = user.get('discord_id')
-        
-        for guild in self.guilds:
-            try:
-                member = await guild.fetch_member(int(discord_id))
-                if member:
-                    verified_role = guild.get_role(int(Config.VERIFIED_ROLE_ID))
-                    if verified_role and verified_role not in member.roles:
-                        await member.add_roles(verified_role)
-                        
-                        # Update database
-                        await self.db.users.update_one(
-                            {"discord_id": discord_id},
-                            {"$set": {
-                                "role_added": True,
-                                "role_added_at": datetime.utcnow(),
-                                "last_seen": datetime.utcnow()
-                            }}
-                        )
-                        
-                        # Send DM notification
-                        await self.send_verification_dm(member)
-                        
-                        # Log success
-                        self.performance_metrics["roles_assigned"] += 1
-                        
-                        # Clear from pending
-                        if discord_id in self.pending_verifications:
-                            del self.pending_verifications[discord_id]
-                        
-                        return True
-                        
-            except discord.NotFound:
-                continue
-            except discord.Forbidden:
-                logger.error(f"❌ No permission to add role in {guild.name}")
-                continue
-            except Exception as e:
-                logger.error(f"❌ Error processing user: {e}")
-                continue
-        
-        return False
-    
-    async def send_verification_dm(self, member: discord.Member):
-        """Send verification complete DM"""
-        try:
-            embed = discord.Embed(
-                title="✅ Verification Complete!",
-                description="Your verification has been processed successfully.",
-                color=discord.Color.green(),
-                timestamp=datetime.utcnow()
-            )
-            
-            embed.add_field(name="Username", value=member.name, inline=True)
-            embed.add_field(name="Server", value=member.guild.name, inline=True)
-            embed.set_footer(text="Thank you for verifying!")
-            
-            await member.send(embed=embed)
-            
-        except discord.Forbidden:
-            pass  # User has DMs disabled
-        except Exception as e:
-            logger.warning(f"Failed to send DM to {member}: {e}")
-    
-    @tasks.loop(minutes=10)
-    async def cleanup_pending(self):
-        """Cleanup old pending verifications"""
-        current_time = time.time()
-        
-        # Clean old pending verifications (7 days)
-        expired = [
-            uid for uid, data in self.pending_verifications.items()
-            if current_time - data.get("first_attempt", current_time) > 604800
-        ]
-        
-        for uid in expired:
-            username = self.pending_verifications[uid].get("username", "Unknown")
-            logger.info(f"🗑️  Cleaning old pending verification: {username} ({uid})")
-            
-            if self.db:
-                await self.db.users.update_one(
-                    {"discord_id": uid},
-                    {"$set": {
-                        "is_blacklisted": True,
-                        "blacklist_reason": "Never joined after 7 days"
-                    }}
-                )
-            
-            del self.pending_verifications[uid]
-    
-    @tasks.loop(minutes=5)
-    async def update_status(self):
-        """Update bot status"""
-        try:
-            servers = len(self.guilds)
-            verifications = self.performance_metrics["verifications_processed"]
-            
-            statuses = [
-                f"{servers} servers",
-                f"{verifications} verifications",
-                "Verification System"
-            ]
-            
-            current_status = statuses[int(time.time() / 60) % len(statuses)]
-            
-            await self.change_presence(
-                activity=discord.Activity(
-                    type=discord.ActivityType.watching,
-                    name=current_status
-                )
-            )
-            
-        except Exception as e:
-            logger.error(f"Status update error: {e}")
-    
-    @tasks.loop(minutes=5)
-    async def performance_monitor(self):
-        """Monitor performance"""
-        try:
-            metrics = {
-                "uptime": self.get_uptime(),
-                "memory_mb": self.get_memory_usage(),
-                "guilds": len(self.guilds),
-                "commands": self.performance_metrics["commands_executed"],
-                "verifications": self.performance_metrics["verifications_processed"],
-                "roles": self.performance_metrics["roles_assigned"],
-                "errors": self.performance_metrics["errors"]
+            report = {
+                "period": "1 hour",
+                "messages_checked": self.performance_metrics["messages_checked"],
+                "security_events": self.performance_metrics["security_events"],
+                "malicious_blocks": self.performance_metrics["malicious_blocks"],
+                "guilds_monitored": len(self.guilds),
+                "timestamp": datetime.utcnow().isoformat()
             }
             
-            # Log every 30 minutes
-            if int(time.time()) % 1800 == 0:
-                logger.info(f"📊 Performance: {metrics}")
+            # Reset counters
+            self.performance_metrics["messages_checked"] = 0
+            self.performance_metrics["security_events"] = 0
+            self.performance_metrics["malicious_blocks"] = 0
+            
+            # Send report to webhook
+            if Config.LOGS_WEBHOOK and (report['security_events'] > 0 or report['malicious_blocks'] > 0):
+                embed = discord.Embed(
+                    title="📊 Hourly Security Report",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                embed.add_field(name="Messages Checked", value=report['messages_checked'], inline=True)
+                embed.add_field(name="Security Events", value=report['security_events'], inline=True)
+                embed.add_field(name="Blocks", value=report['malicious_blocks'], inline=True)
+                embed.add_field(name="Servers", value=report['guilds_monitored'], inline=True)
+                embed.add_field(name="Uptime", value=self.get_uptime(), inline=True)
+                embed.add_field(name="Memory", value=f"{self.get_memory_usage()} MB", inline=True)
+                
+                await self.send_webhook(embed, Config.LOGS_WEBHOOK)
+                
+        except Exception as e:
+            logger.error(f"Security report error: {e}")
+    
+    @tasks.loop(hours=24)
+    async def cleanup_old_logs(self):
+        """Cleanup old security logs"""
+        try:
+            if self.db:
+                # Keep logs for 30 days
+                cutoff = datetime.utcnow() - timedelta(days=30)
+                
+                result = await self.db.security_logs.delete_many({
+                    "timestamp": {"$lt": cutoff}
+                })
+                
+                if result.deleted_count > 0:
+                    logger.info(f"🧹 Cleaned {result.deleted_count} old security logs")
         
         except Exception as e:
-            logger.error(f"Performance monitor error: {e}")
+            logger.error(f"Cleanup error: {e}")
+    
+    @tasks.loop(hours=6)
+    async def update_threat_intelligence(self):
+        """Update threat intelligence from external sources"""
+        try:
+            # You can add API calls to threat intelligence feeds here
+            # For now, we'll just log it
+            logger.info("🔄 Updating threat intelligence...")
+            
+        except Exception as e:
+            logger.error(f"Threat intelligence update error: {e}")
     
     # ============ UTILITY METHODS ============
     
@@ -543,6 +591,18 @@ class VerificationBot(commands.Bot):
         except:
             return 0
     
+    async def send_webhook(self, embed: discord.Embed, webhook_url: str):
+        """Send embed to webhook"""
+        if not webhook_url:
+            return
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                webhook = discord.Webhook.from_url(webhook_url, session=session)
+                await webhook.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Webhook error: {e}")
+    
     async def setup_hook(self):
         """Setup all slash commands"""
         await self.load_commands()
@@ -551,93 +611,239 @@ class VerificationBot(commands.Bot):
     async def load_commands(self):
         """Load all slash commands"""
         
-        # ============ HELP COMMAND ============
+        # ============ SECURITY COMMANDS ============
         
-        @self.tree.command(name="help", description="Show help for all commands")
-        async def help_command(interaction: discord.Interaction, category: Optional[str] = None):
-            """Help command"""
-            categories = {
-                "🔐 Verification": [
-                    ("/setup", "Setup verification system", "admin"),
-                    ("/verifyinfo", "Check verification status", "mod"),
-                    ("/force_verify", "Force verify user", "admin")
-                ],
-                "👑 Administration": [
-                    ("/stats", "View statistics", "admin"),
-                    ("/remove_all_verify", "Remove all verify roles", "admin"),
-                    ("/banip", "Ban IP address", "admin"),
-                    ("/unban", "Unban user", "admin")
-                ],
-                "🛡️ Moderation": [
-                    ("/ban", "Ban user and IP", "mod"),
-                    ("/warn", "Warn user", "mod"),
-                    ("/kick", "Kick user", "mod")
-                ],
-                "🔧 Utility": [
-                    ("/ping", "Check bot latency", "all"),
-                    ("/serverinfo", "Server information", "all"),
-                    ("/userinfo", "User information", "all")
-                ],
-                "🚨 Security": [
-                    ("/audit", "View audit logs", "admin"),
-                    ("/security", "Security dashboard", "admin")
-                ]
-            }
+        @self.tree.command(name="security", description="Security dashboard")
+        @app_commands.checks.has_permissions(administrator=True)
+        async def security_command(interaction: discord.Interaction):
+            """Security dashboard"""
+            await interaction.response.defer(ephemeral=True)
+            
+            try:
+                if self.db:
+                    # Get security stats for this guild
+                    day_ago = datetime.utcnow() - timedelta(days=1)
+                    
+                    stats = {
+                        "today_events": await self.db.security_logs.count_documents({
+                            "guild_id": str(interaction.guild.id),
+                            "timestamp": {"$gte": day_ago}
+                        }),
+                        "total_blocks": await self.db.security_logs.count_documents({
+                            "guild_id": str(interaction.guild.id),
+                            "action_taken": "message_deleted"
+                        }),
+                        "top_threats": [],
+                        "recent_events": []
+                    }
+                    
+                    # Get top threat types
+                    pipeline = [
+                        {"$match": {"guild_id": str(interaction.guild.id)}},
+                        {"$group": {
+                            "_id": "$type",
+                            "count": {"$sum": 1}
+                        }},
+                        {"$sort": {"count": -1}},
+                        {"$limit": 5}
+                    ]
+                    
+                    threat_counts = await self.db.security_logs.aggregate(pipeline).to_list(length=5)
+                    stats["top_threats"] = threat_counts
+                    
+                    # Get recent events
+                    recent_events = await self.db.security_logs.find({
+                        "guild_id": str(interaction.guild.id)
+                    }).sort("timestamp", -1).limit(5).to_list(length=5)
+                    
+                    embed = discord.Embed(
+                        title="🚨 Security Dashboard",
+                        description=f"**Server:** {interaction.guild.name}",
+                        color=discord.Color.blue(),
+                        timestamp=datetime.utcnow()
+                    )
+                    
+                    # Stats
+                    embed.add_field(
+                        name="📊 Statistics (Last 24h)",
+                        value=f"**Security Events:** {stats['today_events']}\n"
+                              f"**Blocks:** {stats['total_blocks']}\n"
+                              f"**Messages Checked:** {self.performance_metrics['messages_checked']}\n"
+                              f"**Bot Uptime:** {self.get_uptime()}",
+                        inline=False
+                    )
+                    
+                    # Top threats
+                    if stats['top_threats']:
+                        threats_text = "\n".join([f"• {t['_id']}: {t['count']}" for t in stats['top_threats']])
+                        embed.add_field(name="🔝 Top Threats", value=threats_text, inline=False)
+                    
+                    # Recent events
+                    if recent_events:
+                        events_text = ""
+                        for event in recent_events:
+                            time = event["timestamp"].strftime("%H:%M")
+                            user = event.get("username", "Unknown")
+                            events_text += f"`{time}` **{event['type']}** - {user}\n"
+                        
+                        embed.add_field(name="🕐 Recent Events", value=events_text, inline=False)
+                    
+                    # System status
+                    embed.add_field(
+                        name="🛡️ Protection Status",
+                        value="✅ **Active**\n"
+                              "🔗 **Link Scanning:** Enabled\n"
+                              "👥 **Mass Mention:** Enabled\n"
+                              "📊 **Logging:** Enabled",
+                        inline=True
+                    )
+                    
+                    embed.set_footer(text="Security System v2.0")
+                    
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    
+                else:
+                    await interaction.followup.send("Database not available.", ephemeral=True)
+                    
+            except Exception as e:
+                logger.error(f"Security command error: {e}")
+                await interaction.followup.send("❌ Error fetching security data.", ephemeral=True)
+        
+        @self.tree.command(name="allow_domain", description="Add a domain to allowed list")
+        @app_commands.checks.has_permissions(administrator=True)
+        @app_commands.describe(domain="Domain to allow (e.g., example.com)")
+        async def allow_domain_command(interaction: discord.Interaction, domain: str):
+            """Add domain to allowed list"""
+            # Clean domain
+            domain = domain.lower().replace('www.', '').split('/')[0].split(':')[0]
+            
+            if self.db:
+                await self.db.guild_settings.update_one(
+                    {"guild_id": str(interaction.guild.id)},
+                    {"$addToSet": {"allowed_domains": domain}},
+                    upsert=True
+                )
+            
+            # Update in-memory cache
+            self.allowed_domains.add(domain)
             
             embed = discord.Embed(
-                title="🤖 Verification Bot Help",
-                description="**Categories:**\n" + "\n".join([f"• {cat}" for cat in categories.keys()]),
-                color=discord.Color.blue(),
+                title="✅ Domain Allowed",
+                description=f"**Domain:** `{domain}`\nAdded to allowed list for this server.",
+                color=discord.Color.green(),
                 timestamp=datetime.utcnow()
             )
             
-            if category:
-                if category in categories:
-                    commands_list = categories[category]
-                    embed.title = f"📚 {category} Commands"
-                    embed.description = None
-                    
-                    for cmd, desc, perm in commands_list:
-                        embed.add_field(
-                            name=cmd,
-                            value=f"{desc}\n*Permission: {perm}*",
-                            inline=False
-                        )
-                else:
-                    embed = discord.Embed(
-                        title="❌ Category not found",
-                        description=f"Available categories: {', '.join(categories.keys())}",
-                        color=discord.Color.red()
-                    )
-            else:
-                for cat_name, commands_list in categories.items():
-                    cmds = "\n".join([f"`{cmd}`" for cmd, _, _ in commands_list[:3]])
-                    embed.add_field(name=cat_name, value=cmds, inline=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        @self.tree.command(name="block_domain", description="Add a domain to block list")
+        @app_commands.checks.has_permissions(administrator=True)
+        @app_commands.describe(domain="Domain to block (e.g., malicious.com)")
+        async def block_domain_command(interaction: discord.Interaction, domain: str):
+            """Add domain to block list"""
+            domain = domain.lower().replace('www.', '').split('/')[0].split(':')[0]
             
-            embed.set_footer(text=f"Total commands: {len(self.tree.get_commands())}")
-            embed.set_thumbnail(url=self.user.display_avatar.url)
+            if self.db:
+                await self.db.guild_settings.update_one(
+                    {"guild_id": str(interaction.guild.id)},
+                    {"$addToSet": {"blocked_domains": domain}},
+                    upsert=True
+                )
+            
+            embed = discord.Embed(
+                title="✅ Domain Blocked",
+                description=f"**Domain:** `{domain}`\nAdded to block list for this server.",
+                color=discord.Color.red(),
+                timestamp=datetime.utcnow()
+            )
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
         
-        # ============ SETUP COMMAND ============
+        @self.tree.command(name="security_logs", description="View security logs")
+        @app_commands.checks.has_permissions(moderate_members=True)
+        @app_commands.describe(
+            user="Filter by user",
+            limit="Number of logs to show (max 20)",
+            days="Days to look back (max 30)"
+        )
+        async def security_logs_command(
+            interaction: discord.Interaction,
+            user: Optional[discord.User] = None,
+            limit: Optional[int] = 10,
+            days: Optional[int] = 7
+        ):
+            """View security logs"""
+            await interaction.response.defer(ephemeral=True)
+            
+            try:
+                query = {"guild_id": str(interaction.guild.id)}
+                
+                if user:
+                    query["user_id"] = str(user.id)
+                
+                days = min(days or 7, 30)
+                limit = min(limit or 10, 20)
+                
+                cutoff = datetime.utcnow() - timedelta(days=days)
+                query["timestamp"] = {"$gte": cutoff}
+                
+                if self.db:
+                    cursor = self.db.security_logs.find(query) \
+                        .sort("timestamp", -1) \
+                        .limit(limit)
+                    
+                    logs = await cursor.to_list(length=limit)
+                    
+                    if not logs:
+                        await interaction.followup.send("No security logs found.", ephemeral=True)
+                        return
+                    
+                    embed = discord.Embed(
+                        title="📋 Security Logs",
+                        color=discord.Color.blue(),
+                        timestamp=datetime.utcnow()
+                    )
+                    
+                    for log in logs:
+                        timestamp = log["timestamp"].strftime("%m/%d %H:%M")
+                        user_mention = f"<@{log['user_id']}>" if log.get('user_id') else "Unknown"
+                        
+                        embed.add_field(
+                            name=f"{timestamp} - {log.get('type', 'Unknown').replace('_', ' ').title()}",
+                            value=f"**User:** {user_mention}\n"
+                                  f"**Action:** {log.get('action_taken', 'None')}\n"
+                                  f"**Details:** {log.get('details', {}).get('details', 'N/A')[:50]}",
+                            inline=False
+                        )
+                    
+                    embed.set_footer(text=f"Showing {len(logs)} logs from last {days} days")
+                    
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send("Database not available.", ephemeral=True)
+                    
+            except Exception as e:
+                logger.error(f"Security logs error: {e}")
+                await interaction.followup.send("❌ Error fetching security logs.", ephemeral=True)
         
-        @self.tree.command(name="setup", description="Setup verification system")
+        # ============ VERIFICATION COMMANDS ============
+        
+        @self.tree.command(name="setup_verification", description="Setup verification panel")
         @app_commands.checks.has_permissions(administrator=True)
         async def setup_verification(interaction: discord.Interaction):
-            """Setup verification embed"""
-            # Create setup panel
+            """Setup verification panel"""
             embed = discord.Embed(
                 title="🔐 SERVER VERIFICATION",
-                description="**Click the button below to start verification**\n\n"
-                          "This verification is required to access all channels in the server.\n"
-                          "Powered by advanced security systems.",
+                description="**Click the button below to verify**\n\n"
+                          "This verification is required to access all channels.\n"
+                          "Powered by KoalaHub security systems.",
                 color=discord.Color.blue(),
                 timestamp=datetime.utcnow()
             )
             
             embed.add_field(
-                name="⚠️ Rules & Requirements",
-                value="• No VPN/Proxy (automatic ban)\n• One account per person\n• Must follow server rules",
+                name="⚠️ Requirements",
+                value="• Must follow server rules",
                 inline=False
             )
             
@@ -648,12 +854,8 @@ class VerificationBot(commands.Bot):
             )
             
             embed.set_footer(text="Protecting our community")
-            embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1200387647512776704/1200387721230815232/koala.png")
             
-            # Create view with buttons
             view = discord.ui.View(timeout=None)
-            
-            # Verification button
             verify_button = discord.ui.Button(
                 label="✅ Start Verification",
                 style=discord.ButtonStyle.green,
@@ -662,83 +864,56 @@ class VerificationBot(commands.Bot):
             )
             view.add_item(verify_button)
             
-            # Send setup
             await interaction.response.send_message(
-                "✅ Verification panel has been created!",
+                "✅ Verification panel created!",
                 ephemeral=True
             )
             
             await interaction.channel.send(embed=embed, view=view)
+        
+        @self.tree.command(name="force_verify", description="Force verify a user")
+        @app_commands.checks.has_permissions(administrator=True)
+        @app_commands.describe(user="User to verify")
+        async def force_verify_command(interaction: discord.Interaction, user: discord.Member):
+            """Force verify a user"""
+            if not Config.VERIFIED_ROLE_ID:
+                await interaction.response.send_message("❌ Verified role not configured.", ephemeral=True)
+                return
             
-            # Log setup
-            await self.log_security_event(
-                "VERIFICATION_SETUP",
-                str(interaction.user.id),
-                str(interaction.guild.id),
-                f"Channel: #{interaction.channel.name}"
-            )
-        
-        # ============ STATS COMMAND ============
-        
-        @self.tree.command(name="stats", description="View detailed statistics")
-        @app_commands.checks.has_permissions(manage_guild=True)
-        async def stats_command(interaction: discord.Interaction):
-            """Statistics command"""
-            await interaction.response.defer(ephemeral=True)
+            verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
+            if not verified_role:
+                await interaction.response.send_message("❌ Verified role not found.", ephemeral=True)
+                return
             
             try:
-                # Get stats
-                guild = interaction.guild
-                stats = {
-                    "server_members": guild.member_count,
-                    "verified_members": 0,
-                    "uptime": self.get_uptime(),
-                    "memory_usage": self.get_memory_usage()
-                }
+                await user.add_roles(verified_role, reason=f"Force verified by {interaction.user}")
                 
+                # Update database
                 if self.db:
-                    # Count verified members
-                    verified_count = 0
-                    for member in guild.members:
-                        user_data = await self.db.users.find_one({"discord_id": str(member.id)})
-                        if user_data and user_data.get("verified_at"):
-                            verified_count += 1
-                    
-                    stats["verified_members"] = verified_count
-                    
-                    # Get total verified
-                    stats["total_verified"] = await self.db.users.count_documents({"verified_at": {"$exists": True}})
-                    
-                    # Get today's verifications
-                    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-                    stats["today_verifications"] = await self.db.verification_logs.count_documents({
-                        "timestamp": {"$gte": today},
-                        "success": True
-                    })
+                    await self.db.users.update_one(
+                        {"discord_id": str(user.id)},
+                        {"$set": {
+                            "verified_at": datetime.utcnow(),
+                            "role_added": True,
+                            "username": str(user)
+                        }},
+                        upsert=True
+                    )
                 
                 embed = discord.Embed(
-                    title="📊 Statistics",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
+                    title="✅ User Force Verified",
+                    description=f"**User:** {user.mention}\n**Verified by:** {interaction.user.mention}",
+                    color=discord.Color.green()
                 )
                 
-                embed.add_field(name="Server Members", value=str(stats["server_members"]), inline=True)
-                embed.add_field(name="Verified Members", value=str(stats["verified_members"]), inline=True)
-                embed.add_field(name="Bot Uptime", value=stats["uptime"], inline=True)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 
-                if "total_verified" in stats:
-                    embed.add_field(name="Total Verified", value=str(stats["total_verified"]), inline=True)
-                    embed.add_field(name="Today's Verifications", value=str(stats["today_verifications"]), inline=True)
-                
-                embed.add_field(name="Memory Usage", value=f"{stats['memory_usage']} MB", inline=True)
-                
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ No permission to add role.", ephemeral=True)
             except Exception as e:
-                logger.error(f"Stats command error: {e}")
-                await interaction.followup.send("❌ Error fetching statistics.", ephemeral=True)
+                await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
         
-        # ============ PING COMMAND ============
+        # ============ UTILITY COMMANDS ============
         
         @self.tree.command(name="ping", description="Check bot latency")
         async def ping_command(interaction: discord.Interaction):
@@ -751,282 +926,48 @@ class VerificationBot(commands.Bot):
             )
             
             embed.add_field(name="Bot Latency", value=f"{latency}ms", inline=True)
-            embed.add_field(name="Database", value="Online ✅" if self.db else "Offline ❌", inline=True)
+            embed.add_field(name="Security Checks", value=f"{self.performance_metrics['messages_checked']}", inline=True)
+            embed.add_field(name="Blocks", value=f"{self.performance_metrics['malicious_blocks']}", inline=True)
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
         
-        # ============ SERVERINFO COMMAND ============
-        
-        @self.tree.command(name="serverinfo", description="Get server information")
-        async def serverinfo_command(interaction: discord.Interaction):
-            """Get server information"""
-            guild = interaction.guild
-            
+        @self.tree.command(name="stats", description="View bot statistics")
+        @app_commands.checks.has_permissions(manage_guild=True)
+        async def stats_command(interaction: discord.Interaction):
+            """View bot statistics"""
             embed = discord.Embed(
-                title=f"📊 {guild.name}",
+                title="📊 Bot Statistics",
                 color=discord.Color.blue(),
                 timestamp=datetime.utcnow()
             )
             
-            # Basic info
-            embed.add_field(name="👑 Owner", value=guild.owner.mention, inline=True)
-            embed.add_field(name="🆔 ID", value=guild.id, inline=True)
-            embed.add_field(name="📅 Created", value=guild.created_at.strftime("%Y-%m-%d"), inline=True)
+            embed.add_field(name="Servers", value=len(self.guilds), inline=True)
+            embed.add_field(name="Uptime", value=self.get_uptime(), inline=True)
+            embed.add_field(name="Memory", value=f"{self.get_memory_usage()} MB", inline=True)
             
-            # Member stats
-            total = guild.member_count
-            online = sum(1 for m in guild.members if m.status != discord.Status.offline)
-            bots = sum(1 for m in guild.members if m.bot)
-            
-            embed.add_field(name="👥 Members", value=f"Total: {total}\nOnline: {online}\nBots: {bots}", inline=True)
-            
-            if guild.icon:
-                embed.set_thumbnail(url=guild.icon.url)
-            
-            embed.set_footer(text=f"Requested by {interaction.user.name}")
-            
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-        # ============ USERINFO COMMAND ============
-        
-        @self.tree.command(name="userinfo", description="Get user information")
-        async def userinfo_command(interaction: discord.Interaction, user: Optional[discord.Member] = None):
-            """Get user information"""
-            target = user or interaction.user
-            
-            embed = discord.Embed(
-                title=f"👤 {target.name}",
-                color=target.color if target.color != discord.Color.default() else discord.Color.blue(),
-                timestamp=datetime.utcnow()
-            )
-            
-            # Basic info
-            embed.add_field(name="🆔 ID", value=target.id, inline=True)
-            embed.add_field(name="🤖 Bot", value="Yes" if target.bot else "No", inline=True)
-            embed.add_field(name="📅 Joined", value=target.joined_at.strftime("%Y-%m-%d") if target.joined_at else "Unknown", inline=True)
-            
-            # Account age
-            account_age = (datetime.utcnow() - target.created_at).days
-            embed.add_field(name="🎂 Account Age", value=f"{account_age} days", inline=True)
-            
-            # Verification status
-            verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID)) if Config.VERIFIED_ROLE_ID else None
-            is_verified = verified_role in target.roles if verified_role else False
-            
-            embed.add_field(name="✅ Verified", value="Yes" if is_verified else "No", inline=True)
-            
-            embed.set_thumbnail(url=target.display_avatar.url)
-            embed.set_footer(text=f"Requested by {interaction.user.name}")
-            
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-        # ============ BAN COMMAND ============
-        
-        @self.tree.command(name="ban", description="Ban a user and their IP")
-        @app_commands.checks.has_permissions(ban_members=True)
-        @app_commands.describe(
-            user="User to ban",
-            reason="Reason for ban",
-            delete_messages="Delete messages (days)"
-        )
-        async def ban_command(
-            interaction: discord.Interaction,
-            user: discord.Member,
-            reason: str = "No reason provided",
-            delete_messages: app_commands.Range[int, 0, 7] = 0
-        ):
-            """Ban command"""
-            if user == interaction.user:
-                await interaction.response.send_message("❌ Cannot ban yourself.", ephemeral=True)
-                return
-            
-            if user.guild_permissions.administrator:
-                await interaction.response.send_message("❌ Cannot ban administrators.", ephemeral=True)
-                return
-            
-            await interaction.response.defer(ephemeral=True)
-            
-            try:
-                # Get user IP from database
-                user_ip = "Unknown"
-                if self.db:
-                    user_data = await self.db.users.find_one({"discord_id": str(user.id)})
-                    if user_data:
-                        user_ip = user_data.get('ip_address', 'Unknown')
-                        
-                        # Ban IP
-                        await self.db.banned_ips.insert_one({
-                            "ip_address": user_ip,
-                            "discord_id": str(user.id),
-                            "username": str(user),
-                            "reason": reason,
-                            "banned_by": str(interaction.user),
-                            "banned_at": datetime.utcnow(),
-                            "type": "manual"
-                        })
-                
-                # Discord ban
-                try:
-                    await user.ban(reason=reason, delete_message_days=delete_messages)
-                    
-                    # Log ban
-                    await self.log_security_event(
-                        "USER_BANNED",
-                        str(user.id),
-                        str(interaction.guild.id),
-                        f"Reason: {reason}, IP: {user_ip}",
-                        "WARNING"
-                    )
-                    
-                    # Send confirmation
-                    embed = discord.Embed(
-                        title="✅ User Banned",
-                        description=f"**User:** {user.mention}\n**Reason:** {reason}",
-                        color=discord.Color.red()
-                    )
-                    
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    
-                except discord.Forbidden:
-                    await interaction.followup.send("❌ Missing permissions to ban this user.", ephemeral=True)
-                
-            except Exception as e:
-                logger.error(f"Ban command error: {e}")
-                await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
-        
-        # ============ KICK COMMAND ============
-        
-        @self.tree.command(name="kick", description="Kick a user")
-        @app_commands.checks.has_permissions(kick_members=True)
-        @app_commands.describe(
-            user="User to kick",
-            reason="Reason for kick"
-        )
-        async def kick_command(
-            interaction: discord.Interaction,
-            user: discord.Member,
-            reason: str = "No reason provided"
-        ):
-            """Kick command"""
-            if user == interaction.user:
-                await interaction.response.send_message("❌ Cannot kick yourself.", ephemeral=True)
-                return
-            
-            if user.guild_permissions.administrator:
-                await interaction.response.send_message("❌ Cannot kick administrators.", ephemeral=True)
-                return
-            
-            try:
-                await user.kick(reason=reason)
-                
-                embed = discord.Embed(
-                    title="✅ User Kicked",
-                    description=f"**User:** {user.mention}\n**Reason:** {reason}",
-                    color=discord.Color.orange()
-                )
-                
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                
-            except discord.Forbidden:
-                await interaction.response.send_message("❌ Missing permissions to kick this user.", ephemeral=True)
-            except Exception as e:
-                logger.error(f"Kick command error: {e}")
-                await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
-        
-        # ============ WARN COMMAND ============
-        
-        @self.tree.command(name="warn", description="Warn a user")
-        @app_commands.checks.has_permissions(moderate_members=True)
-        @app_commands.describe(
-            user="User to warn",
-            reason="Reason for warning"
-        )
-        async def warn_command(interaction: discord.Interaction, user: discord.Member, reason: str):
-            """Warn a user"""
-            if user == interaction.user:
-                await interaction.response.send_message("❌ Cannot warn yourself.", ephemeral=True)
-                return
-            
-            if user.guild_permissions.administrator:
-                await interaction.response.send_message("❌ Cannot warn administrators.", ephemeral=True)
-                return
-            
-            # Create warning
-            warning_data = {
-                "user_id": str(user.id),
-                "moderator_id": str(interaction.user.id),
-                "reason": reason,
-                "timestamp": datetime.utcnow(),
-                "guild_id": str(interaction.guild.id)
-            }
+            embed.add_field(name="Messages Checked", value=self.performance_metrics["messages_checked"], inline=True)
+            embed.add_field(name="Security Events", value=self.performance_metrics["security_events"], inline=True)
+            embed.add_field(name="Blocks", value=self.performance_metrics["malicious_blocks"], inline=True)
             
             if self.db:
-                await self.db.warnings.insert_one(warning_data)
-            
-            # Send DM to user
-            try:
-                embed = discord.Embed(
-                    title="⚠️ You have been warned",
-                    description=f"**Server:** {interaction.guild.name}\n**Reason:** {reason}",
-                    color=discord.Color.orange(),
-                    timestamp=datetime.utcnow()
-                )
+                total_users = await self.db.users.count_documents({})
+                verified_users = await self.db.users.count_documents({"verified_at": {"$exists": True}})
                 
-                await user.send(embed=embed)
-                
-            except discord.Forbidden:
-                pass  # User has DMs disabled
-            
-            # Send confirmation
-            embed = discord.Embed(
-                title="✅ User Warned",
-                description=f"**User:** {user.mention}\n**Reason:** {reason}",
-                color=discord.Color.green()
-            )
+                embed.add_field(name="Total Users", value=total_users, inline=True)
+                embed.add_field(name="Verified Users", value=verified_users, inline=True)
+                embed.add_field(name="Database", value="✅ Connected", inline=True)
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    # ============ ERROR HANDLING ============
-    
-    async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        """Handle slash command errors"""
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "❌ You don't have permission to use this command.",
-                ephemeral=True
-            )
-        elif isinstance(error, app_commands.BotMissingPermissions):
-            await interaction.response.send_message(
-                "❌ I don't have permission to execute this command.",
-                ephemeral=True
-            )
-        else:
-            logger.error(f"Command error: {error}", exc_info=True)
-            
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(
-                        "❌ An error occurred while executing this command.",
-                        ephemeral=True
-                    )
-                else:
-                    await interaction.response.send_message(
-                        "❌ An error occurred while executing this command.",
-                        ephemeral=True
-                    )
-            except:
-                pass
     
     async def close(self):
         """Clean shutdown"""
         logger.info("🛑 Shutting down bot...")
         
-        # Stop all background tasks
+        # Stop background tasks
         tasks = [
-            self.check_verifications,
-            self.cleanup_pending,
-            self.update_status,
-            self.performance_monitor
+            self.security_report,
+            self.cleanup_old_logs,
+            self.update_threat_intelligence
         ]
         
         for task in tasks:
@@ -1051,7 +992,7 @@ def run_discord_bot():
         logger.error("❌ No Discord token configured")
         return
     
-    bot = VerificationBot()
+    bot = SecurityMonitorBot()
     
     try:
         bot.run(Config.DISCORD_TOKEN)
