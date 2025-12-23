@@ -32,24 +32,23 @@ except ImportError as e:
 # Global variables
 bot_process = None
 bot_thread = None
+bot = None
 
 def cleanup():
     """Cleanup resources on exit"""
     logger.info("🧹 Cleaning up resources...")
-    global bot_process, bot_thread
+    global bot_process, bot_thread, bot
     
-    # Stop bot thread
-    if bot_thread and bot_thread.is_alive():
-        logger.info("🛑 Stopping Discord bot thread...")
-    
-    # Stop bot process if running
-    if bot_process and bot_process.poll() is None:
-        logger.info("🛑 Stopping Discord bot process...")
-        bot_process.terminate()
+    # Stop bot
+    if bot:
         try:
-            bot_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            bot_process.kill()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(bot.close())
+            logger.info("✅ Discord bot closed")
+        except Exception as e:
+            logger.error(f"Error closing bot: {e}")
     
     logger.info("✅ Cleanup complete")
 
@@ -64,10 +63,21 @@ def run_bot():
     logger.info("🤖 Starting Discord bot...")
     
     try:
-        # Import and run the bot function
-        from bot.bot import run_discord_bot
-        run_discord_bot()
+        # Create and run the bot
+        from bot.bot import SecurityMonitorBot
         
+        # Create bot instance
+        bot_instance = SecurityMonitorBot()
+        
+        # Store globally for cleanup
+        global bot
+        bot = bot_instance
+        
+        # Run the bot
+        bot_instance.run(Config.DISCORD_TOKEN)
+        
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
     except Exception as e:
         logger.error(f"❌ Bot error: {e}")
         logger.error("Bot traceback:")
@@ -92,7 +102,7 @@ def start_bot_in_thread():
     
     # Wait for bot to initialize
     logger.info("⏳ Waiting for bot to initialize (5 seconds)...")
-    time.sleep(5)
+    time.sleep(10)  # Give more time for bot to start
     
     if bot_thread.is_alive():
         logger.info("✅ Discord bot is running in background")

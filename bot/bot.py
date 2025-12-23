@@ -112,8 +112,8 @@ class SecurityMonitorBot(commands.Bot):
             'youtu.be'
         }
         
-        # Setup databases
-        asyncio.create_task(self.setup_databases())
+        # Don't setup databases here - wait for async context
+        # We'll do this in setup_hook
     
     async def setup_databases(self):
         """Initialize database connections"""
@@ -605,6 +605,8 @@ class SecurityMonitorBot(commands.Bot):
     
     async def setup_hook(self):
         """Setup all slash commands"""
+        # Setup databases first
+        await self.setup_databases()
         await self.load_commands()
         logger.info("✅ Commands loaded successfully")
     
