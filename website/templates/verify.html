@@ -4,182 +4,145 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Discord Verification</title>
+
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
-<body>
-    <div class="verification-container">
-        <div class="verification-card">
-            <div class="verification-header">
-                <i class="fas fa-shield-check fa-3x"></i>
-                <h1>Discord Verification</h1>
-                <p class="subtitle">Connect your Discord account to verify</p>
-            </div>
-            
-            <div class="verification-steps">
-                <div class="step {% if discord_user %}active{% endif %}">
-                    <span class="step-number">1</span>
-                    <span class="step-text">Connect Discord</span>
-                </div>
-                <div class="step">
-                    <span class="step-number">2</span>
-                    <span class="step-text">IP Check</span>
-                </div>
-                <div class="step">
-                    <span class="step-number">3</span>
-                    <span class="step-text">Complete</span>
-                </div>
-            </div>
-            
-            <div class="verification-body">
-                <div class="warning-box">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <p><strong>Warning:</strong> VPN/Proxy users will be automatically banned. One account per person only.</p>
-                </div>
-                
-                <div id="verificationResult"></div>
-                
-                <div class="verification-form">
-                    {% if not discord_user %}
-                    <div class="discord-connect">
-                        <h3><i class="fab fa-discord"></i> Connect Discord Account</h3>
-                        <p>Click the button below to connect your Discord account</p>
-                        
-                        <a href="{{ url_for('auth_discord') }}" class="btn-discord">
-                            <i class="fab fa-discord"></i> Login with Discord
-                        </a>
-                        
-                        <p class="small-text">We only access your basic profile information (username and ID)</p>
-                    </div>
-                    {% else %}
-                    <div class="discord-connected">
-                        <div class="user-info">
-                            <div class="avatar-placeholder">
-                                <i class="fas fa-user"></i>
-                            </div>
-                            <div class="user-details">
-                                <h3>{{ discord_user.full_username }}</h3>
-                                <p>ID: {{ discord_user.id }}</p>
-                            </div>
-                        </div>
-                        
-                        <div class="action-buttons">
-                            <a href="{{ url_for('auth_logout') }}" class="btn-logout">
-                                <i class="fas fa-sign-out-alt"></i> Use Different Account
-                            </a>
-                        </div>
-                        
-                        <h3 style="margin-top: 30px;"><i class="fas fa-shield-check"></i> Ready to Verify</h3>
-                        <p>Click the button below to complete verification</p>
-                        
-                        <button id="startVerification" class="btn-verify">
-                            <i class="fas fa-check-circle"></i> Start Verification
-                        </button>
-                    </div>
-                    {% endif %}
-                </div>
-                
-                <div class="info-box">
-                    <h3><i class="fas fa-info-circle"></i> What we check:</h3>
-                    <ul>
-                        <li><i class="fas fa-check"></i> IP Address verification</li>
-                        <li><i class="fas fa-check"></i> VPN/Proxy detection</li>
-                        <li><i class="fas fa-check"></i> Ban list check</li>
-                        <li><i class="fas fa-check"></i> One account per IP</li>
-                    </ul>
-                </div>
-            </div>
-            
-            <div class="verification-footer">
-                <p><i class="fas fa-lock"></i> Your data is secure and only used for verification</p>
-                <p><a href="/admin/login" style="color: #666; font-size: 12px;">Admin Login</a></p>
-            </div>
-        </div>
-    </div>
 
-    <script>
-        document.getElementById('startVerification')?.addEventListener('click', async function() {
-            showResult('<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Verifying...</div>', 'loading');
-            
-            try {
-                const response = await fetch('/api/verify', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    showResult(`
-                        <div style="color: green; text-align: center;">
-                            <div style="font-size: 48px; margin-bottom: 20px;">✅</div>
-                            <h3 style="color: green;">Verification Successful!</h3>
-                            <p style="font-size: 18px; margin: 10px 0;">🎉 You have been successfully verified!</p>
-                            <div style="background: #e8f5e9; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                                <p><strong>👤 Username:</strong> ${data.data.username}</p>
-                                <p><strong>🛡️ VPN Check:</strong> ${data.data.vpn_check}</p>
-                                <p><strong>🔐 Status:</strong> Verified ✅</p>
-                            </div>
-                            <p>You can now return to Discord and access all channels in the server.</p>
-                            <p>The bot will automatically give you the Verified role.</p>
-                            <p style="margin-top: 20px; font-style: italic;">Please go back to the server to enjoy your access!</p>
-                        </div>
-                    `, 'success');
-                    
-                    // Clear the form
-                    setTimeout(() => {
-                        window.location.href = '/verify';
-                    }, 8000);
-                } else {
-                    if (data.requires_oauth) {
-                        showResult(`
-                            <div style="color: orange; text-align: center;">
-                                <div style="font-size: 48px; margin-bottom: 20px;">⚠️</div>
-                                <h3 style="color: orange;">Discord Login Required</h3>
-                                <p>Please connect your Discord account first to continue.</p>
-                                <p><a href="/auth/discord" class="btn-discord" style="display: inline-block; margin-top: 10px;">
-                                    <i class="fab fa-discord"></i> Login with Discord
-                                </a></p>
-                            </div>
-                        `, 'error');
-                    } else if (data.error.includes("already verified")) {
-                        showResult(`
-                            <div style="color: orange; text-align: center;">
-                                <div style="font-size: 48px; margin-bottom: 20px;">✅</div>
-                                <h3 style="color: orange;">Already Verified</h3>
-                                <p>✅ You are already verified!</p>
-                                <p>You don't need to verify again. Please return to the server.</p>
-                                <p>If you're having issues accessing the server, please contact an administrator.</p>
-                                <p style="margin-top: 20px;"><a href="/auth/logout" class="btn-logout" style="display: inline-block;">
-                                    <i class="fas fa-sign-out-alt"></i> Logout
-                                </a></p>
-                            </div>
-                        `, 'info');
-                    } else {
-                        showResult(`
-                            <div style="color: red; text-align: center;">
-                                <div style="font-size: 48px; margin-bottom: 20px;">❌</div>
-                                <h3 style="color: red;">Verification Failed</h3>
-                                <p>❌ ${data.error}</p>
-                                <p>If you believe this is an error, please contact an administrator.</p>
-                            </div>
-                        `, 'error');
-                    }
+<body>
+<div class="verification-container"
+     data-csrf="{{ csrf_token() }}"
+     data-has-discord="{{ 'true' if discord_user else 'false' }}"
+     data-is-verified="{{ 'true' if is_verified else 'false' }}">
+
+    <div class="verification-card">
+
+        <div class="verification-header">
+            <i class="fas fa-shield-check fa-3x"></i>
+            <h1>Discord Verification</h1>
+            <p class="subtitle">Connect your Discord account to verify</p>
+        </div>
+
+        <div class="verification-body">
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash-message flash-{{ category }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+            {% endwith %}
+
+            <div class="warning-box">
+                <i class="fas fa-exclamation-triangle"></i>
+                <p><strong>Warning:</strong> VPN/Proxy users will be automatically banned.</p>
+            </div>
+
+            <div id="verificationResult"></div>
+
+            {% if not discord_user %}
+            <!-- STEP 1 -->
+            <div class="discord-connect">
+                <h3><i class="fab fa-discord"></i> Connect Discord</h3>
+                <a href="{{ url_for('auth_discord') }}" class="btn-discord">
+                    <i class="fab fa-discord"></i> Login with Discord
+                </a>
+            </div>
+
+            {% elif is_verified %}
+            <!-- ALREADY VERIFIED -->
+            <div class="discord-connected">
+                <h3>✅ Already Verified</h3>
+                <p>{{ discord_user.full_username }}</p>
+
+                <a href="{{ url_for('auth_logout') }}" class="btn-logout">
+                    <i class="fas fa-sign-out-alt"></i> Use Different Account
+                </a>
+            </div>
+
+            {% else %}
+            <!-- STEP 2 -->
+            <div class="discord-connected">
+                <h3>{{ discord_user.full_username }}</h3>
+                <p>ID: {{ discord_user.id }}</p>
+
+                <button id="startVerification" class="btn-verify">
+                    <i class="fas fa-check-circle"></i> Start Verification
+                </button>
+
+                <a href="{{ url_for('auth_logout') }}" class="btn-logout">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </a>
+            </div>
+            {% endif %}
+
+        </div>
+
+        <div class="verification-footer">
+            <p><i class="fas fa-lock"></i> Secure Verification</p>
+        </div>
+
+    </div>
+</div>
+
+<!-- =================== JAVASCRIPT =================== -->
+<script>
+(() => {
+    const container = document.querySelector('.verification-container');
+    if (!container) return;
+
+    const csrfToken = container.dataset.csrf;
+    const startBtn = document.getElementById('startVerification');
+
+    startBtn?.addEventListener('click', async () => {
+        const originalText = startBtn.innerHTML;
+        startBtn.disabled = true;
+        startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
+
+        showResult('<i class="fas fa-spinner fa-spin"></i> Verifying...', 'loading');
+
+        try {
+            const res = await fetch('/api/verify', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': csrfToken
                 }
-            } catch (error) {
-                showResult('<div style="color: red;">Error connecting to server. Please try again.</div>', 'error');
+            });
+
+            const data = await res.json();
+
+            if (data.success) {
+                showResult(
+                    `<h3 style="color:green">✅ Verified</h3>
+                     <p>Welcome ${data.data.username}</p>`,
+                    'success'
+                );
+                setTimeout(() => location.reload(), 3000);
+            } else {
+                showResult(
+                    `<h3 style="color:red">❌ Failed</h3>
+                     <p>${data.error || 'Verification error'}</p>`,
+                    'error'
+                );
             }
-        });
-        
-        function showResult(message, type) {
-            const resultDiv = document.getElementById('verificationResult');
-            resultDiv.innerHTML = `<div class="result-${type}">${message}</div>`;
-            
-            // Scroll to result
-            resultDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (err) {
+            showResult('<p style="color:red">Server error</p>', 'error');
+        } finally {
+            startBtn.disabled = false;
+            startBtn.innerHTML = originalText;
         }
-    </script>
+    });
+
+    function showResult(html, type) {
+        const box = document.getElementById('verificationResult');
+        box.innerHTML = `<div class="result-${type}">${html}</div>`;
+        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+})();
+</script>
+
 </body>
 </html>
