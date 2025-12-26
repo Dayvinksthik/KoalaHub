@@ -1,8 +1,3 @@
-"""
-Discord Verification System - Bot Implementation
-Complete working version with IP banning and auto-kick
-"""
-
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -18,6 +13,10 @@ import re
 import urllib.parse
 import psutil
 import humanize
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
@@ -46,7 +45,7 @@ class SecurityMonitorBot(commands.Bot):
             "commands_executed": 0
         }
         
-        self.security_events = []
+        self.security_events: List[Dict[str, Any]] = []
         self.banned_ips = set()
         self.banned_users = set()
         
@@ -61,7 +60,25 @@ class SecurityMonitorBot(commands.Bot):
             logger.info("✅ Bot initialized with security monitoring")
         except Exception as e:
             logger.error(f"❌ Failed to load banned data: {e}")
-    
+
+    async def send_webhook(self, webhook_url: str, embed_data: Dict[str, Any], webhook_name: str = "Bot Webhook") -> bool:
+        """Send embed to Discord webhook"""
+        if not webhook_url:
+            return False
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(webhook_url, json={"embeds": [embed_data]}) as response:
+                    if response.status in [200, 204]:
+                        logger.info(f"✅ Bot webhook sent to {webhook_name}")
+                        return True
+                    else:
+                        logger.error(f"❌ Bot webhook {webhook_name} failed: {response.status}")
+                        return False
+        except Exception as e:
+            logger.error(f"⚠️ Bot webhook {webhook_name} error: {e}")
+            return False
+
     async def setup_hook(self):
         """Setup slash commands"""
         logger.info("🔄 Setting up slash commands...")
@@ -122,10 +139,10 @@ class SecurityMonitorBot(commands.Bot):
             if hasattr(Config, 'VERIFIED_ROLE_ID') and Config.VERIFIED_ROLE_ID:
                 verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
             
-            is_verified = verified_role and verified_role in target_user.roles
+            is_verified = verified_role and verified_role in getattr(target_user, "roles", [])
             
             embed = discord.Embed(
-                title=f"🔍 Verification Status - {target_user.display_name}",
+                title=f"🔍 Verification Status - {getattr(target_user, 'display_name', str(target_user))}",
                 color=discord.Color.green() if is_verified else discord.Color.red(),
                 timestamp=datetime.utcnow()
             )
@@ -138,7 +155,7 @@ class SecurityMonitorBot(commands.Bot):
             
             embed.add_field(
                 name="User",
-                value=f"{target_user.mention}\n`{target_user.id}`",
+                value=f"{getattr(target_user, 'mention', str(target_user))}\n`{getattr(target_user, 'id', 'unknown')}`",
                 inline=True
             )
             
@@ -183,7 +200,7 @@ class SecurityMonitorBot(commands.Bot):
                     dm_embed.add_field(name="Ban Type", value="Account + IP Ban", inline=False)
                     
                     await user.send(embed=dm_embed)
-                except:
+                except Exception:
                     pass
                 
                 # Kick the user
@@ -198,7 +215,7 @@ class SecurityMonitorBot(commands.Bot):
                 
                 # Delete messages if requested
                 delete_count = 0
-                if delete_messages > 0 and delete_messages <= 7:
+                if delete_messages and delete_messages > 0 and delete_messages <= 7:
                     try:
                         cutoff = datetime.utcnow() - timedelta(days=delete_messages)
                         
@@ -209,7 +226,7 @@ class SecurityMonitorBot(commands.Bot):
                                         await message.delete()
                                         delete_count += 1
                                         await asyncio.sleep(0.5)
-                            except:
+                            except Exception:
                                 continue
                     except Exception as e:
                         logger.error(f"Message deletion error: {e}")
@@ -218,9 +235,18 @@ class SecurityMonitorBot(commands.Bot):
                 role_removed = False
                 if hasattr(Config, 'VERIFIED_ROLE_ID') and Config.VERIFIED_ROLE_ID:
                     verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
-                    if verified_role and verified_role in user.roles:
-                        await user.remove_roles(verified_role, reason=f"Banned: {reason}")
-                        role_removed = True
+                    # user may be a discord.User (not Member) so fetch member if possible
+                    member_obj = None
+                    try:
+                        member_obj = await interaction.guild.fetch_member(user.id)
+                    except Exception:
+                        member_obj = None
+                    if verified_role and member_obj and verified_role in member_obj.roles:
+                        try:
+                            await member_obj.remove_roles(verified_role, reason=f"Banned: {reason}")
+                            role_removed = True
+                        except Exception:
+                            role_removed = False
                 
                 embed = discord.Embed(
                     title="✅ User Banned & Kicked",
@@ -228,7 +254,7 @@ class SecurityMonitorBot(commands.Bot):
                     timestamp=datetime.utcnow()
                 )
                 
-                embed.add_field(name="User", value=f"{user.mention} ({user.id})", inline=True)
+                embed.add_field(name="User", value=f"{getattr(user, 'mention', str(user))} ({user.id})", inline=True)
                 embed.add_field(name="Reason", value=reason, inline=True)
                 embed.add_field(name="Kick Status", value="✅ Success" if kick_success else "❌ Failed", inline=True)
                 
@@ -253,10 +279,32 @@ class SecurityMonitorBot(commands.Bot):
                     {"reason": reason, "user": str(user), "delete_count": delete_count},
                     "user_banned"
                 )
+
+                # New: send alert to webhook if configured
+                webhook_url = os.getenv('DISCORD_ALERTS_WEBHOOK')
+                if webhook_url:
+                    webhook_embed = {
+                        "title": "🚨 User Banned",
+                        "description": f"**{user}** has been banned from the server",
+                        "color": 0xff0000,
+                        "fields": [
+                            {"name": "User", "value": f"{getattr(user, 'mention', str(user))} ({user.id})", "inline": True},
+                            {"name": "Reason", "value": reason, "inline": True},
+                            {"name": "Banned By", "value": f"{interaction.user.mention}", "inline": True},
+                            {"name": "Messages Deleted", "value": str(delete_count), "inline": True},
+                            {"name": "Auto-Kick", "value": "✅ Enabled", "inline": True}
+                        ],
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "footer": {"text": "Security System"}
+                    }
+                    await self.send_webhook(webhook_url, webhook_embed, "Alerts Webhook")
                 
             except Exception as e:
                 logger.error(f"Ban error: {e}")
-                await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+                try:
+                    await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+                except Exception:
+                    pass
         
         @self.tree.command(name="unban", description="Unban a user")
         @app_commands.checks.has_permissions(administrator=True)
@@ -336,8 +384,8 @@ class SecurityMonitorBot(commands.Bot):
             for user_id in banned_list:
                 try:
                     user = await self.fetch_user(int(user_id))
-                    banned_text += f"• {user.mention} (`{user_id}`)\n"
-                except:
+                    banned_text += f"• {getattr(user, 'mention', str(user))} (`{user_id}`)\n"
+                except Exception:
                     banned_text += f"• `{user_id}` (User not found)\n"
             
             embed.description = banned_text
@@ -510,7 +558,7 @@ class SecurityMonitorBot(commands.Bot):
                             f"Your message in {message.guild.name} was removed for containing a suspicious link.\n"
                             f"**Message:** {message.content[:100]}..."
                         )
-                    except:
+                    except Exception:
                         pass
                     
                     self.performance_metrics["security_events"] += 1
@@ -526,7 +574,7 @@ class SecurityMonitorBot(commands.Bot):
                 await message.delete()
                 self.performance_metrics["security_events"] += 1
                 return True
-            except:
+            except Exception:
                 pass
         
         return False
@@ -546,7 +594,7 @@ class SecurityMonitorBot(commands.Bot):
                         f"You were automatically kicked from **{member.guild.name}** because you are banned.\n"
                         f"Please contact server administrators if you believe this is a mistake."
                     )
-                except:
+                except Exception:
                     pass
                 
                 # Kick the user
@@ -608,13 +656,16 @@ class SecurityMonitorBot(commands.Bot):
         logger.info(f'✅ Connected to {len(self.guilds)} guild(s)')
         
         # Set rich presence
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name=f"security | {len(self.guilds)} servers"
-            ),
-            status=discord.Status.online
-        )
+        try:
+            await self.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.watching,
+                    name=f"security | {len(self.guilds)} servers"
+                ),
+                status=discord.Status.online
+            )
+        except Exception:
+            pass
         
         # Start background tasks
         self.start_background_tasks()
@@ -652,9 +703,17 @@ class SecurityMonitorBot(commands.Bot):
     
     def start_background_tasks(self):
         """Start background tasks"""
-        if not self.cleanup_task.is_running():
-            self.cleanup_task.start()
-            logger.info("✅ Started cleanup task")
+        try:
+            if not self.cleanup_task.is_running():
+                self.cleanup_task.start()
+                logger.info("✅ Started cleanup task")
+        except Exception:
+            # If task isn't yet bound or another error, attempt to start safely
+            try:
+                self.cleanup_task.start()
+                logger.info("✅ Started cleanup task")
+            except Exception as e:
+                logger.error(f"Failed to start cleanup task: {e}")
     
     @tasks.loop(hours=24)
     async def cleanup_task(self):
@@ -680,36 +739,32 @@ class SecurityMonitorBot(commands.Bot):
         try:
             process = psutil.Process()
             return int(process.memory_info().rss / 1024 / 1024)
-        except:
+        except Exception:
             return 0
     
     async def close(self):
         """Clean shutdown"""
         logger.info("🛑 Shutting down bot...")
         
-        if self.cleanup_task.is_running():
-            self.cleanup_task.cancel()
+        try:
+            if self.cleanup_task.is_running():
+                self.cleanup_task.cancel()
+        except Exception:
+            pass
         
         await super().close()
-        logger.info("✅ Bot shutdown complete")
 
-# ============ MAIN ENTRY POINT ============
-
-def run_discord_bot():
-    """Run the Discord bot"""
-    if not Config.DISCORD_TOKEN:
-        logger.error("❌ No Discord token configured")
-        return
-    
-    bot = SecurityMonitorBot()
-    
-    try:
-        bot.run(Config.DISCORD_TOKEN)
-    except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped by user")
-    except Exception as e:
-        logger.error(f"❌ Bot crashed: {e}")
-        raise
 
 if __name__ == "__main__":
-    run_discord_bot()
+    # Instantiate and run the bot
+    TOKEN = os.getenv("DISCORD_BOT_TOKEN") or getattr(Config, "BOT_TOKEN", None)
+    if not TOKEN:
+        logger.error("❌ No bot token found. Set DISCORD_BOT_TOKEN in environment or Config.BOT_TOKEN.")
+        raise SystemExit("Missing bot token")
+    
+    bot = SecurityMonitorBot()
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        logger.error(f"Bot terminated with error: {e}")
+        raise
