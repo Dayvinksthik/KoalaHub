@@ -1,6 +1,6 @@
 """
 Discord Verification System - Website Application
-Fixed OAuth session persistence and duplicate verification prevention
+Complete working version with OAuth2 and verification
 """
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, g
@@ -21,7 +21,6 @@ import hashlib
 import random
 from functools import wraps
 import bleach
-import re
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
@@ -152,7 +151,6 @@ def create_app():
                 flash('Admin access required.', 'warning')
                 return redirect(url_for("admin_login"))
 
-            # Check session timeout
             login_time = session.get("login_time")
             if login_time:
                 login_dt = datetime.fromisoformat(login_time)
@@ -174,6 +172,15 @@ def create_app():
             g.start_time = time.time()
         generate_csrf_token()
 
+    @app.after_request
+    def after_request(response):
+        """After request handler"""
+        if hasattr(g, 'start_time'):
+            duration = time.time() - g.start_time
+            if duration > 2:
+                logger.warning(f"Slow request {request.path} ({duration:.2f}s)")
+        return response
+
     # ================= MAIN ROUTES =================
 
     @app.route("/")
@@ -184,7 +191,7 @@ def create_app():
     @app.route("/verify")
     def verify():
         """Main verification page"""
-        # Check for errors in query params
+        # Check for errors
         error = request.args.get('error')
         if error == 'oauth_failed':
             flash('⚠️ Discord login failed. Please try again.', 'warning')
@@ -199,13 +206,11 @@ def create_app():
             user_data = db_manager.get_user(discord_user["id"])
             if user_data and user_data.get("verified_at"):
                 is_verified = True
-                # Store verification status in session for quick access
                 session["is_verified"] = True
-                session["verification_date"] = user_data.get("verified_at").isoformat() if user_data.get("verified_at") else None
         
         return render_template("verify.html", 
                              csrf_token=generate_csrf_token(),
-                             discord_user=session.get("discord_user"),
+                             discord_user=discord_user,
                              is_verified=is_verified)
 
     @app.route("/blocked")
@@ -384,10 +389,9 @@ def create_app():
     @require_csrf
     @limiter.limit("3 per minute")
     def api_verify():
-        """API endpoint for verification - WITH DUPLICATE PREVENTION"""
-        # Get client info
+        """API endpoint for verification"""
         ip_addr = get_client_ip()
-        user_agent = request.headers.get("User-Agent", "Unknown")
+        user_agent = request.headers.get("User-Agent", "Unknown")[:500]
         
         # Check if Discord user is connected
         discord_user = session.get("discord_user")
@@ -398,11 +402,9 @@ def create_app():
                 "requires_oauth": True
             }), 400
         
-        # ============ DUPLICATE VERIFICATION CHECK ============
-        # Check if user is already verified in database
+        # Check if already verified
         existing_user = db_manager.get_user(discord_user["id"])
         if existing_user and existing_user.get("verified_at"):
-            # User is already verified - do NOT process again
             log_security_event("DUPLICATE_VERIFICATION_ATTEMPT",
                              discord_user["id"],
                              f"User {discord_user['full_username']} attempted duplicate verification",
@@ -411,10 +413,8 @@ def create_app():
             return jsonify({
                 "success": False,
                 "error": "You are already verified! No need to verify again.",
-                "already_verified": True,
-                "verified_at": existing_user.get("verified_at").isoformat() if existing_user.get("verified_at") else None,
-                "username": discord_user["full_username"]
-            }), 409  # 409 Conflict - resource already exists
+                "already_verified": True
+            }), 409
         
         # Check if IP is banned
         if db_manager.is_ip_banned(ip_addr):
@@ -433,14 +433,14 @@ def create_app():
                 "discord_id": discord_user["id"],
                 "username": discord_user["full_username"],
                 "ip_address": ip_addr,
-                "user_agent": user_agent[:500],
-                "verified_at": datetime.utcnow(),  # Mark as verified NOW
+                "user_agent": user_agent,
+                "verified_at": datetime.utcnow(),
                 "last_seen": datetime.utcnow(),
                 "is_banned": False,
                 "is_vpn": False,
                 "attempts": 1,
-                "role_added": False,  # Will be set by bot when role is given
-                "verification_count": 1  # Track number of verifications
+                "role_added": False,
+                "guild_id": Config.GUILD_ID if hasattr(Config, 'GUILD_ID') else None
             }
             
             # Add or update user
@@ -458,7 +458,7 @@ def create_app():
                     "is_duplicate": False
                 })
                 
-                # Update session to mark as verified
+                # Update session
                 session["is_verified"] = True
                 session["verification_date"] = datetime.utcnow().isoformat()
                 
@@ -466,8 +466,8 @@ def create_app():
                                  discord_user["id"],
                                  f"User {discord_user['full_username']} verified successfully from IP: {ip_addr}")
                 
-                # Send to Discord webhook (only once per user)
-                if Config.WEBHOOK_URL:
+                # Send to Discord webhook
+                if hasattr(Config, 'WEBHOOK_URL') and Config.WEBHOOK_URL:
                     try:
                         embed = {
                             "title": "✅ New User Verified",
@@ -514,7 +514,7 @@ def create_app():
                 "requires_oauth": False
             }), 500
 
-    # ================= DISCORD OAUTH ROUTES - FIXED =================
+    # ================= DISCORD OAUTH ROUTES =================
 
     @app.route("/auth/discord")
     def auth_discord():
@@ -522,7 +522,7 @@ def create_app():
         # Generate state for CSRF protection
         state = secrets.token_urlsafe(32)
         session["oauth_state"] = state
-        session.permanent = True  # Make session persistent
+        session.permanent = True
         
         # Discord OAuth2 URL
         discord_auth_url = (
@@ -537,8 +537,7 @@ def create_app():
 
     @app.route("/callback")
     def callback():
-        """Discord OAuth callback - FIXED SESSION PERSISTENCE"""
-        # Get parameters
+        """Discord OAuth callback"""
         code = request.args.get("code")
         state = request.args.get("state")
         
@@ -547,7 +546,6 @@ def create_app():
             flash('❌ Invalid OAuth state. Please try again.', 'danger')
             return redirect(url_for("verify"))
         
-        # Clear state
         session.pop("oauth_state", None)
         
         try:
@@ -563,24 +561,47 @@ def create_app():
             
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
             
-            # Exchange code for token
-            response = requests.post(
-                "https://discord.com/api/oauth2/token", 
-                data=data, 
-                headers=headers, 
-                timeout=10
-            )
+            # Exchange code for token with retry logic
+            max_retries = 3
+            access_token = None
             
-            if response.status_code != 200:
-                logger.error(f"Discord token exchange failed: {response.status_code} - {response.text[:200]}")
-                flash('❌ Failed to authenticate with Discord. Please try again.', 'danger')
-                return redirect(url_for("verify", error="oauth_failed"))
-            
-            token_data = response.json()
-            access_token = token_data.get("access_token")
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        wait_time = (2 ** attempt) * random.uniform(0.5, 1.5)
+                        time.sleep(wait_time)
+                    
+                    response = requests.post(
+                        "https://discord.com/api/oauth2/token", 
+                        data=data, 
+                        headers=headers, 
+                        timeout=10
+                    )
+                    
+                    if response.status_code == 200:
+                        token_data = response.json()
+                        access_token = token_data.get("access_token")
+                        break
+                    elif response.status_code == 429:
+                        retry_after = int(response.headers.get('Retry-After', 5))
+                        time.sleep(retry_after)
+                        continue
+                    else:
+                        if attempt == max_retries - 1:
+                            logger.error(f"Discord token exchange failed: {response.status_code}")
+                            flash('❌ Failed to authenticate with Discord.', 'danger')
+                            return redirect(url_for("verify", error="oauth_failed"))
+                except requests.exceptions.Timeout:
+                    if attempt == max_retries - 1:
+                        flash('⏱️ Connection to Discord timed out.', 'danger')
+                        return redirect(url_for("verify", error="network_error"))
+                except requests.exceptions.RequestException:
+                    if attempt == max_retries - 1:
+                        flash('🔌 Network error connecting to Discord.', 'danger')
+                        return redirect(url_for("verify", error="network_error"))
             
             if not access_token:
-                flash('❌ Failed to get access token from Discord.', 'danger')
+                flash('❌ Failed to get access token.', 'danger')
                 return redirect(url_for("verify", error="oauth_failed"))
             
             # Get user info
@@ -591,51 +612,44 @@ def create_app():
                 timeout=10
             )
             
-            if user_response.status_code != 200:
+            if user_response.status_code == 200:
+                user_data = user_response.json()
+                
+                # Store user in session
+                session["discord_user"] = {
+                    "id": str(user_data["id"]),
+                    "username": user_data["username"],
+                    "discriminator": user_data.get("discriminator", "0"),
+                    "full_username": f"{user_data['username']}#{user_data.get('discriminator', '0')}",
+                    "avatar": user_data.get("avatar"),
+                    "verified": user_data.get("verified", False)
+                }
+                
+                # Check if already verified
+                if db_manager.db is not None:
+                    existing_user = db_manager.get_user(str(user_data["id"]))
+                    if existing_user and existing_user.get("verified_at"):
+                        session["is_verified"] = True
+                        session["verification_date"] = existing_user.get("verified_at").isoformat() if existing_user.get("verified_at") else None
+                
+                # Ensure session is saved
+                session.permanent = True
+                session.modified = True
+                
+                log_security_event("DISCORD_OAUTH_SUCCESS", 
+                                 str(user_data["id"]),
+                                 f"User {user_data['username']} authenticated")
+                
+                flash('✅ Successfully connected to Discord! You can now verify.', 'success')
+                return redirect(url_for("verify"))
+            else:
                 logger.error(f"Failed to get Discord user: {user_response.status_code}")
                 flash('❌ Failed to retrieve Discord profile.', 'danger')
                 return redirect(url_for("verify"))
             
-            user_data = user_response.json()
-            
-            # Store user in session - THIS WAS MISSING SESSION PERMANENCY
-            session["discord_user"] = {
-                "id": str(user_data["id"]),
-                "username": user_data["username"],
-                "discriminator": user_data.get("discriminator", "0"),
-                "full_username": f"{user_data['username']}#{user_data.get('discriminator', '0')}",
-                "avatar": user_data.get("avatar"),
-                "verified": user_data.get("verified", False)
-            }
-            
-            # FIX: Make session permanent and mark as modified
-            session.permanent = True
-            session.modified = True
-            
-            # Check if user is already verified
-            if db_manager.db is not None:
-                existing_user = db_manager.get_user(str(user_data["id"]))
-                if existing_user and existing_user.get("verified_at"):
-                    session["is_verified"] = True
-                    session["verification_date"] = existing_user.get("verified_at").isoformat() if existing_user.get("verified_at") else None
-            
-            log_security_event("DISCORD_OAUTH_SUCCESS", 
-                             str(user_data["id"]),
-                             f"User {user_data['username']} authenticated")
-            
-            flash('✅ Successfully connected to Discord! You can now verify.', 'success')
-            return redirect(url_for("verify"))
-            
-        except requests.exceptions.Timeout:
-            flash('⏱️ Connection to Discord timed out. Please try again.', 'danger')
-            return redirect(url_for("verify", error="network_error"))
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error in callback: {e}")
-            flash('🔌 Network error connecting to Discord. Please check your connection.', 'danger')
-            return redirect(url_for("verify", error="network_error"))
         except Exception as e:
             logger.error(f"Unexpected error in callback: {e}")
-            flash('❌ An unexpected error occurred. Please try again.', 'danger')
+            flash('❌ An unexpected error occurred.', 'danger')
             return redirect(url_for("verify"))
 
     @app.route("/auth/logout")
