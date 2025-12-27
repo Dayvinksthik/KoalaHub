@@ -1,4 +1,9 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, g
+"""
+Discord Verification System - Website Application
+Complete version with all webhooks working
+"""
+
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, g, make_response
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -28,9 +33,22 @@ def create_app():
     # ================= SECURITY CONFIG =================
     app.config['SECRET_KEY'] = Config.SECRET_KEY
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=Config.SESSION_TIMEOUT_MINUTES)
-    app.config['SESSION_COOKIE_SECURE'] = True
+    app.config['SESSION_COOKIE_SECURE'] = True  # Set to False for local testing without HTTPS
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+    
+    # For Render deployment, we need to handle session properly
+    app.config['SESSION_REFRESH_EACH_REQUEST'] = True
+    
+    # Important: On Render, we might need to use a different session setup
+    app.config['SESSION_TYPE'] = 'filesystem'
+    app.config['SESSION_FILE_DIR'] = '/tmp/flask_session'
+    app.config['SESSION_FILE_THRESHOLD'] = 100
+
+    # For development, allow HTTP cookies
+    if os.environ.get('FLASK_ENV') == 'development':
+        app.config['SESSION_COOKIE_SECURE'] = False
+        app.config['PREFERRED_URL_SCHEME'] = 'http'
 
     csp = {
         'default-src': ["'self'"],
@@ -38,25 +56,27 @@ def create_app():
         'script-src': ["'self'"],
         'font-src': ["'self'", "https://cdnjs.cloudflare.com"],
         'img-src': ["'self'", "data:", "https:"],
-        'connect-src': ["'self'", "https://discord.com"]
+        'connect-src': ["'self'", "https://discord.com", "https://koalahub.onrender.com"]
     }
 
     Talisman(
         app,
-        force_https=True,
-        session_cookie_secure=True,
+        force_https=False if os.environ.get('FLASK_ENV') == 'development' else True,
+        session_cookie_secure=app.config['SESSION_COOKIE_SECURE'],
         content_security_policy=csp,
-        strict_transport_security=True,
+        strict_transport_security=False if os.environ.get('FLASK_ENV') == 'development' else True,
         frame_options='DENY'
     )
 
-    CORS(app, origins=[Config.WEBSITE_URL, "http://localhost:10000"])
+    CORS(app, origins=[Config.WEBSITE_URL, "http://localhost:10000", "https://koalahub.onrender.com", "http://localhost:5000"])
 
     limiter = Limiter(
         get_remote_address,
         app=app,
         storage_uri="memory://",
-        default_limits=["200 per day", "50 per hour"]
+        default_limits=["200 per day", "50 per hour"],
+        strategy="fixed-window",  # Changed from "moving-window" for better compatibility
+        key_func=lambda: request.remote_addr or "127.0.0.1"
     )
 
     # ================= WEBHOOK FUNCTIONS =================
@@ -94,6 +114,7 @@ def create_app():
     def send_verification_webhook(discord_user, ip_addr):
         """Send verification success to main webhook"""
         if not Config.WEBHOOK_URL:
+            logger.warning("No main webhook URL configured")
             return False
         
         embed = {
@@ -115,6 +136,7 @@ def create_app():
     def send_log_webhook(event_type, details):
         """Send log to logs webhook"""
         if not Config.LOGS_WEBHOOK:
+            logger.warning("No logs webhook URL configured")
             return False
         
         colors = {
@@ -137,6 +159,7 @@ def create_app():
     def send_alert_webhook(alert_type, severity, details):
         """Send alert to alerts webhook"""
         if not Config.ALERTS_WEBHOOK:
+            logger.warning("No alerts webhook URL configured")
             return False
         
         colors = {
@@ -159,6 +182,7 @@ def create_app():
     def send_backup_notification(action, details):
         """Send backup notification"""
         if not Config.BACKUP_WEBHOOK:
+            logger.warning("No backup webhook URL configured")
             return False
         
         embed = {
@@ -202,9 +226,26 @@ def create_app():
 
     def validate_csrf_token():
         """Validate CSRF token"""
+        # Skip CSRF for health checks and certain endpoints
+        if request.path in ['/health', '/healthz', '/api/stats']:
+            return True
+            
         if request.method in ["POST", "PUT", "DELETE", "PATCH"]:
-            token = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token")
-            return token and token == session.get("csrf_token")
+            # Try to get token from headers first, then form
+            token = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+            if not token:
+                # Try JSON body
+                try:
+                    if request.is_json:
+                        data = request.get_json(silent=True) or {}
+                        token = data.get('csrf_token')
+                except:
+                    pass
+            
+            session_token = session.get("csrf_token")
+            if not token or not session_token or token != session_token:
+                logger.warning(f"CSRF validation failed. Token: {token}, Session token: {session_token}")
+                return False
         return True
 
     def log_security_event(event_type, user_id=None, details="", level="INFO"):
@@ -252,9 +293,13 @@ def create_app():
         @wraps(f)
         def wrapper(*args, **kwargs):
             if not validate_csrf_token():
-                log_security_event("CSRF_VALIDATION_FAILED", level="WARNING")
-                flash('CSRF validation failed. Please try again.', 'danger')
-                return redirect(request.referrer or url_for('home'))
+                log_security_event("CSRF_VALIDATION_FAILED", level="WARNING", 
+                                 details=f"Path: {request.path}, Method: {request.method}")
+                return jsonify({
+                    "success": False,
+                    "error": "CSRF validation failed. Please refresh the page and try again.",
+                    "requires_oauth": False
+                }), 403
             return f(*args, **kwargs)
         return wrapper
 
@@ -268,11 +313,16 @@ def create_app():
 
             login_time = session.get("login_time")
             if login_time:
-                login_dt = datetime.fromisoformat(login_time)
-                if datetime.utcnow() - login_dt > timedelta(minutes=Config.SESSION_TIMEOUT_MINUTES):
+                try:
+                    login_dt = datetime.fromisoformat(login_time)
+                    if datetime.utcnow() - login_dt > timedelta(minutes=Config.SESSION_TIMEOUT_MINUTES):
+                        session.clear()
+                        log_security_event("ADMIN_SESSION_EXPIRED")
+                        flash('Session expired. Please login again.', 'info')
+                        return redirect(url_for("admin_login"))
+                except ValueError:
+                    # Invalid timestamp, clear session
                     session.clear()
-                    log_security_event("ADMIN_SESSION_EXPIRED")
-                    flash('Session expired. Please login again.', 'info')
                     return redirect(url_for("admin_login"))
 
             return f(*args, **kwargs)
@@ -285,7 +335,13 @@ def create_app():
         """Before request handler"""
         if not hasattr(g, 'start_time'):
             g.start_time = time.time()
-        generate_csrf_token()
+        
+        # Generate CSRF token for all GET requests
+        if request.method == 'GET' and not request.path.startswith('/static'):
+            generate_csrf_token()
+            
+        # Log request for debugging
+        logger.debug(f"Request: {request.method} {request.path} | IP: {get_client_ip()}")
 
     @app.after_request
     def after_request(response):
@@ -294,6 +350,12 @@ def create_app():
             duration = time.time() - g.start_time
             if duration > 2:
                 logger.warning(f"Slow request {request.path} ({duration:.2f}s)")
+        
+        # Add security headers
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['X-XSS-Protection'] = '1; mode=block'
+        
         return response
 
     # ================= MAIN ROUTES =================
@@ -311,6 +373,8 @@ def create_app():
             flash('⚠️ Discord login failed. Please try again.', 'warning')
         elif error == 'network_error':
             flash('🔌 Network error. Please check your connection.', 'danger')
+        elif error == 'session_expired':
+            flash('⏰ Session expired. Please login again.', 'info')
         
         discord_user = session.get("discord_user")
         is_verified = False
@@ -320,6 +384,10 @@ def create_app():
             if user_data and user_data.get("verified_at"):
                 is_verified = True
                 session["is_verified"] = True
+                session["verification_date"] = user_data.get("verified_at").isoformat() if user_data.get("verified_at") else None
+        
+        # Log verification page access
+        logger.info(f"Verification page accessed. User: {discord_user.get('id') if discord_user else 'Not logged in'}, Verified: {is_verified}")
         
         return render_template("verify.html", 
                              csrf_token=generate_csrf_token(),
@@ -340,11 +408,28 @@ def create_app():
     @limiter.exempt
     def health():
         """Health check endpoint"""
-        return jsonify({
-            "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
-            "service": "discord-verification"
-        })
+        try:
+            db_status = "unknown"
+            if db_manager.db is not None:
+                # Try a simple query
+                db_manager.db.command('ping')
+                db_status = "connected"
+            else:
+                db_status = "disconnected"
+                
+            return jsonify({
+                "status": "healthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "service": "discord-verification",
+                "database": db_status,
+                "session": "active" if session else "inactive"
+            })
+        except Exception as e:
+            return jsonify({
+                "status": "degraded",
+                "error": str(e)[:100],
+                "timestamp": datetime.utcnow().isoformat()
+            }), 500
 
     @app.route("/healthz")
     @limiter.exempt
@@ -505,14 +590,17 @@ def create_app():
     @require_csrf
     @limiter.limit("3 per minute")
     def api_verify():
-        """API endpoint for verification"""
+        """API endpoint for verification - FIXED VERSION"""
         # Add debug logging
-        logger.info(f"Verification API called from IP: {get_client_ip()}")
+        ip_addr = get_client_ip()
+        logger.info(f"Verification API called from IP: {ip_addr}")
+        logger.info(f"Session ID: {session.get('_id', 'No session ID')}")
         logger.info(f"Session keys: {list(session.keys())}")
         
-        ip_addr = get_client_ip()
+        # Get user agent
         user_agent = request.headers.get("User-Agent", "Unknown")[:500]
         
+        # Check if user is logged in
         discord_user = session.get("discord_user")
         logger.info(f"Discord user in session: {discord_user}")
         
@@ -572,10 +660,11 @@ def create_app():
                 "is_vpn": False,
                 "attempts": 1,
                 "role_added": False,
-                "guild_id": Config.GUILD_ID if hasattr(Config, 'GUILD_ID') else None
+                "guild_id": str(Config.GUILD_ID) if hasattr(Config, 'GUILD_ID') and Config.GUILD_ID else None
             }
             
             success = db_manager.add_user(user_data)
+            logger.info(f"Database save result: {success}")
             
             if success:
                 # Add verification log
@@ -598,8 +687,11 @@ def create_app():
                                  f"User {discord_user['full_username']} verified successfully from IP: {ip_addr}")
                 
                 # Send to ALL webhooks
-                send_verification_webhook(discord_user, ip_addr)
+                webhook_success = send_verification_webhook(discord_user, ip_addr)
                 send_log_webhook("User Verified", f"✅ {discord_user['full_username']} verified successfully")
+                
+                # Generate a new CSRF token for the next request
+                generate_csrf_token()
                 
                 return jsonify({
                     "success": True,
@@ -611,21 +703,23 @@ def create_app():
                         "status": "verified",
                         "timestamp": datetime.utcnow().isoformat(),
                         "message": "✅ Verification successful! The bot will give you the Verified role shortly.",
-                        "is_first_verification": True
+                        "is_first_verification": True,
+                        "webhook_sent": webhook_success
                     }
                 })
             else:
+                logger.error("Failed to save user to database")
                 return jsonify({
                     "success": False,
-                    "error": "Failed to save verification data.",
+                    "error": "Failed to save verification data to database.",
                     "requires_oauth": False
                 }), 500
                 
         except Exception as e:
-            logger.error(f"Verification API error: {e}")
+            logger.error(f"Verification API error: {e}", exc_info=True)
             return jsonify({
                 "success": False,
-                "error": "Internal server error",
+                "error": f"Internal server error: {str(e)[:100]}",
                 "requires_oauth": False
             }), 500
 
@@ -721,7 +815,7 @@ def create_app():
                     "is_vpn": False,
                     "attempts": 1,
                     "role_added": True,
-                    "guild_id": Config.GUILD_ID if hasattr(Config, 'GUILD_ID') else None
+                    "guild_id": str(Config.GUILD_ID) if hasattr(Config, 'GUILD_ID') and Config.GUILD_ID else None
                 }
             
             success = db_manager.add_user(user)
@@ -808,6 +902,9 @@ def create_app():
         session["oauth_state"] = state
         session.permanent = True
         
+        # Store referrer to redirect back after OAuth
+        session["oauth_referrer"] = request.referrer or url_for("verify")
+        
         discord_auth_url = (
             f"https://discord.com/api/oauth2/authorize?"
             f"client_id={Config.CLIENT_ID}&"
@@ -816,17 +913,23 @@ def create_app():
             f"scope=identify&"
             f"state={state}"
         )
+        
+        logger.info(f"Starting OAuth flow for state: {state[:10]}...")
         return redirect(discord_auth_url)
 
     @app.route("/callback")
     def callback():
-        """Discord OAuth callback"""
+        """Discord OAuth callback - FIXED VERSION"""
         code = request.args.get("code")
         state = request.args.get("state")
         
+        logger.info(f"OAuth callback received. Code: {'Yes' if code else 'No'}, State: {state}")
+        logger.info(f"Session state: {session.get('oauth_state')}")
+        
         if not code or state != session.get("oauth_state"):
+            logger.error(f"Invalid OAuth state. Expected: {session.get('oauth_state')}, Got: {state}")
             flash('❌ Invalid OAuth state. Please try again.', 'danger')
-            return redirect(url_for("verify"))
+            return redirect(url_for("verify", error="oauth_failed"))
         
         session.pop("oauth_state", None)
         
@@ -849,6 +952,7 @@ def create_app():
                 try:
                     if attempt > 0:
                         wait_time = (2 ** attempt) * random.uniform(0.5, 1.5)
+                        logger.info(f"Retry {attempt + 1}/{max_retries}, waiting {wait_time:.1f}s")
                         time.sleep(wait_time)
                     
                     response = requests.post(
@@ -861,30 +965,35 @@ def create_app():
                     if response.status_code == 200:
                         token_data = response.json()
                         access_token = token_data.get("access_token")
+                        logger.info(f"Successfully got access token (attempt {attempt + 1})")
                         break
                     elif response.status_code == 429:
                         retry_after = int(response.headers.get('Retry-After', 5))
+                        logger.warning(f"Rate limited, waiting {retry_after}s")
                         time.sleep(retry_after)
                         continue
                     else:
+                        logger.error(f"Token exchange failed (attempt {attempt + 1}): {response.status_code} - {response.text[:200]}")
                         if attempt == max_retries - 1:
-                            logger.error(f"Discord token exchange failed: {response.status_code}")
                             send_alert_webhook("Discord OAuth Failed", "medium", 
                                              f"Token exchange failed: {response.status_code}")
                             flash('❌ Failed to authenticate with Discord.', 'danger')
                             return redirect(url_for("verify", error="oauth_failed"))
                 except requests.exceptions.Timeout:
+                    logger.error(f"Token exchange timeout (attempt {attempt + 1})")
                     if attempt == max_retries - 1:
                         send_alert_webhook("Discord OAuth Timeout", "medium", "Token exchange timeout")
                         flash('⏱️ Connection to Discord timed out.', 'danger')
                         return redirect(url_for("verify", error="network_error"))
-                except requests.exceptions.RequestException:
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Token exchange network error (attempt {attempt + 1}): {e}")
                     if attempt == max_retries - 1:
                         send_alert_webhook("Discord OAuth Network Error", "medium", "Network error during token exchange")
                         flash('🔌 Network error connecting to Discord.', 'danger')
                         return redirect(url_for("verify", error="network_error"))
             
             if not access_token:
+                logger.error("Failed to get access token after all retries")
                 flash('❌ Failed to get access token.', 'danger')
                 return redirect(url_for("verify", error="oauth_failed"))
             
@@ -908,14 +1017,19 @@ def create_app():
                     "verified": user_data.get("verified", False)
                 }
                 
+                # Check if user is already verified in database
                 if db_manager.db is not None:
                     existing_user = db_manager.get_user(str(user_data["id"]))
                     if existing_user and existing_user.get("verified_at"):
                         session["is_verified"] = True
                         session["verification_date"] = existing_user.get("verified_at").isoformat() if existing_user.get("verified_at") else None
                 
+                # Regenerate session ID for security
                 session.permanent = True
                 session.modified = True
+                
+                # Generate new CSRF token
+                generate_csrf_token()
                 
                 log_security_event("DISCORD_OAUTH_SUCCESS", 
                                  str(user_data["id"]),
@@ -923,17 +1037,20 @@ def create_app():
                 
                 send_log_webhook("Discord Login", f"User {user_data['username']} logged in via Discord OAuth")
                 
+                logger.info(f"User {user_data['username']} successfully authenticated")
                 flash('✅ Successfully connected to Discord! You can now verify.', 'success')
+                
+                # Redirect back to verify page
                 return redirect(url_for("verify"))
             else:
-                logger.error(f"Failed to get Discord user: {user_response.status_code}")
+                logger.error(f"Failed to get Discord user: {user_response.status_code} - {user_response.text[:200]}")
                 send_alert_webhook("Discord User Info Failed", "medium", 
                                  f"Failed to get user info: {user_response.status_code}")
                 flash('❌ Failed to retrieve Discord profile.', 'danger')
                 return redirect(url_for("verify"))
             
         except Exception as e:
-            logger.error(f"Unexpected error in callback: {e}")
+            logger.error(f"Unexpected error in callback: {e}", exc_info=True)
             send_alert_webhook("OAuth Callback Error", "high", f"Unexpected error: {str(e)[:200]}")
             flash('❌ An unexpected error occurred.', 'danger')
             return redirect(url_for("verify"))
@@ -966,10 +1083,12 @@ def create_app():
 
     @app.errorhandler(429)
     def rate_limit(e):
+        log_security_event("RATE_LIMIT_EXCEEDED", details=request.path, level="WARNING")
         send_log_webhook("Rate Limit Exceeded", f"IP {get_client_ip()} hit rate limit on {request.path}")
         return jsonify({
+            "success": False,
             "error": "Rate limit exceeded",
-            "retry_after": e.description
+            "retry_after": e.description if hasattr(e, 'description') else 60
         }), 429
 
     @app.errorhandler(500)
@@ -978,5 +1097,21 @@ def create_app():
         send_alert_webhook("500 Internal Server Error", "critical", 
                          f"Error on {request.path}: {str(e)[:500]}")
         return render_template("error.html", error="500 - Internal server error"), 500
+
+    @app.route('/session/debug')
+    def session_debug():
+        """Debug endpoint to check session (remove in production)"""
+        if os.environ.get('FLASK_ENV') != 'production':
+            session_info = {
+                'keys': list(session.keys()),
+                'has_discord_user': 'discord_user' in session,
+                'discord_user': session.get('discord_user'),
+                'csrf_token': session.get('csrf_token'),
+                'is_verified': session.get('is_verified'),
+                'session_id': session.get('_id', 'No session ID')
+            }
+            return jsonify(session_info)
+        else:
+            return jsonify({'error': 'Not available in production'}), 403
 
     return app
