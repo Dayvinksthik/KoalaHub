@@ -1,8 +1,3 @@
-"""
-Discord Verification System - Website Application
-Complete working version with OAuth2 and verification
-"""
-
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, g
 from flask_cors import CORS
 from flask_limiter import Limiter
@@ -64,6 +59,118 @@ def create_app():
         default_limits=["200 per day", "50 per hour"]
     )
 
+    # ================= WEBHOOK FUNCTIONS =================
+    
+    def send_webhook(webhook_url, embed_data, webhook_name="Unknown"):
+        """Send embed to Discord webhook"""
+        if not webhook_url:
+            logger.warning(f"No webhook URL provided for {webhook_name}")
+            return False
+        
+        try:
+            response = requests.post(
+                webhook_url,
+                json={"embeds": [embed_data]},
+                timeout=5
+            )
+            
+            if response.status_code in [200, 204]:
+                logger.info(f"✅ Webhook sent successfully to {webhook_name}")
+                return True
+            else:
+                logger.error(f"❌ Webhook {webhook_name} failed: {response.status_code} - {response.text[:100]}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            logger.error(f"⏱️ Webhook {webhook_name} timeout")
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"🔌 Webhook {webhook_name} error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"⚠️ Webhook {webhook_name} unexpected error: {e}")
+            return False
+    
+    def send_verification_webhook(discord_user, ip_addr):
+        """Send verification success to main webhook"""
+        if not Config.WEBHOOK_URL:
+            return False
+        
+        embed = {
+            "title": "✅ New User Verified",
+            "description": f"**{discord_user['full_username']}** has been verified",
+            "color": 0x00ff00,  # Green
+            "fields": [
+                {"name": "Discord ID", "value": f"`{discord_user['id']}`", "inline": True},
+                {"name": "Username", "value": discord_user['full_username'], "inline": True},
+                {"name": "IP Address", "value": f"||{ip_addr}||", "inline": True},
+                {"name": "Timestamp", "value": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'), "inline": True}
+            ],
+            "timestamp": datetime.utcnow().isoformat(),
+            "footer": {"text": "KoalaHub Verification System"}
+        }
+        
+        return send_webhook(Config.WEBHOOK_URL, embed, "Main Webhook")
+    
+    def send_log_webhook(event_type, details):
+        """Send log to logs webhook"""
+        if not Config.LOGS_WEBHOOK:
+            return False
+        
+        colors = {
+            "INFO": 0x3498db,    # Blue
+            "WARNING": 0xf39c12, # Orange
+            "ERROR": 0xe74c3c,   # Red
+            "SUCCESS": 0x2ecc71  # Green
+        }
+        
+        embed = {
+            "title": f"📝 {event_type}",
+            "description": details[:2000],  # Discord limit
+            "color": colors.get("INFO", 0x3498db),
+            "timestamp": datetime.utcnow().isoformat(),
+            "footer": {"text": "System Log"}
+        }
+        
+        return send_webhook(Config.LOGS_WEBHOOK, embed, "Logs Webhook")
+    
+    def send_alert_webhook(alert_type, severity, details):
+        """Send alert to alerts webhook"""
+        if not Config.ALERTS_WEBHOOK:
+            return False
+        
+        colors = {
+            "low": 0x3498db,     # Blue
+            "medium": 0xf39c12,  # Orange
+            "high": 0xe74c3c,    # Red
+            "critical": 0x992d22 # Dark Red
+        }
+        
+        embed = {
+            "title": f"🚨 {alert_type}",
+            "description": details[:2000],
+            "color": colors.get(severity.lower(), 0xe74c3c),
+            "timestamp": datetime.utcnow().isoformat(),
+            "footer": {"text": f"Severity: {severity.upper()}"}
+        }
+        
+        return send_webhook(Config.ALERTS_WEBHOOK, embed, "Alerts Webhook")
+    
+    def send_backup_notification(action, details):
+        """Send backup notification"""
+        if not Config.BACKUP_WEBHOOK:
+            return False
+        
+        embed = {
+            "title": f"💾 {action}",
+            "description": details[:2000],
+            "color": 0x9b59b6,  # Purple
+            "timestamp": datetime.utcnow().isoformat(),
+            "footer": {"text": "Backup System"}
+        }
+        
+        return send_webhook(Config.BACKUP_WEBHOOK, embed, "Backup Webhook")
+
     # ================= UTILITIES =================
 
     def get_client_ip():
@@ -123,6 +230,14 @@ def create_app():
             except Exception as e:
                 logger.error(f"Security log DB failure: {e}")
 
+        # Send to logs webhook
+        if level in ["WARNING", "ERROR"]:
+            send_log_webhook(f"{event_type} - {level}", details)
+        
+        if level == "ERROR":
+            # Send critical errors to alerts webhook
+            send_alert_webhook(f"System Error: {event_type}", "high", details)
+        
         msg = f"{event_type} | IP={ip_addr} | {details}"
         if level == "ERROR":
             logger.error(msg)
@@ -191,14 +306,12 @@ def create_app():
     @app.route("/verify")
     def verify():
         """Main verification page"""
-        # Check for errors
         error = request.args.get('error')
         if error == 'oauth_failed':
             flash('⚠️ Discord login failed. Please try again.', 'warning')
         elif error == 'network_error':
             flash('🔌 Network error. Please check your connection.', 'danger')
         
-        # Check if user is already verified
         discord_user = session.get("discord_user")
         is_verified = False
         
@@ -238,7 +351,6 @@ def create_app():
     def healthz():
         """Kubernetes health check"""
         try:
-            # Check database connection
             health = db_manager.health_check()
             
             if health["overall"] == "healthy":
@@ -270,15 +382,13 @@ def create_app():
             username = sanitize_input(request.form.get("username", ""))
             password = request.form.get("password", "")
             
-            # Check honeypot
             honeypot = request.form.get("honeypot", "")
             if honeypot:
-                time.sleep(3)  # Delay for bots
+                time.sleep(3)
                 return render_template("admin/login.html", 
                                      error="Authentication failed.",
                                      csrf_token=generate_csrf_token())
             
-            # Verify credentials
             if username == Config.ADMIN_USERNAME:
                 try:
                     if bcrypt.checkpw(password.encode('utf-8'), 
@@ -290,12 +400,16 @@ def create_app():
                         session.permanent = True
                         
                         log_security_event("ADMIN_LOGIN_SUCCESS", username)
+                        send_log_webhook("Admin Login", f"Admin {username} logged in successfully")
+                        
                         return redirect(url_for("admin_dashboard"))
                         
                 except Exception as e:
                     logger.error(f"Password verification error: {e}")
             
             log_security_event("ADMIN_LOGIN_FAILED", username, level="WARNING")
+            send_alert_webhook("Failed Admin Login", "medium", f"Failed login attempt for username: {username}")
+            
             return render_template("admin/login.html", 
                                  error="Invalid credentials. Please check your username and password.",
                                  csrf_token=generate_csrf_token())
@@ -347,6 +461,7 @@ def create_app():
                 log_security_event("IP_UNBANNED", 
                                  session.get("admin_username"), 
                                  f"IP {ip_address} unbanned")
+                send_log_webhook("IP Unbanned", f"IP {ip_address} was unbanned by {session.get('admin_username')}")
                 flash('✅ IP address unbanned successfully.', 'success')
             else:
                 flash('❌ Failed to unban IP address.', 'danger')
@@ -361,6 +476,7 @@ def create_app():
         """Admin logout"""
         if "admin_username" in session:
             log_security_event("ADMIN_LOGOUT", session["admin_username"])
+            send_log_webhook("Admin Logout", f"Admin {session['admin_username']} logged out")
         
         session.clear()
         flash('✅ Successfully logged out.', 'info')
@@ -390,17 +506,26 @@ def create_app():
     @limiter.limit("3 per minute")
     def api_verify():
         """API endpoint for verification"""
+        # Add debug logging
+        logger.info(f"Verification API called from IP: {get_client_ip()}")
+        logger.info(f"Session keys: {list(session.keys())}")
+        
         ip_addr = get_client_ip()
         user_agent = request.headers.get("User-Agent", "Unknown")[:500]
         
-        # Check if Discord user is connected
         discord_user = session.get("discord_user")
+        logger.info(f"Discord user in session: {discord_user}")
+        
         if not discord_user:
+            logger.warning(f"No discord user in session for IP: {ip_addr}")
             return jsonify({
                 "success": False,
                 "error": "Discord account not connected. Please login with Discord first.",
                 "requires_oauth": True
             }), 400
+        
+        # Add more debug logging
+        logger.info(f"Checking verification for user: {discord_user['id']} ({discord_user['full_username']})")
         
         # Check if already verified
         existing_user = db_manager.get_user(discord_user["id"])
@@ -409,6 +534,9 @@ def create_app():
                              discord_user["id"],
                              f"User {discord_user['full_username']} attempted duplicate verification",
                              level="WARNING")
+            
+            send_log_webhook("Duplicate Verification Attempt", 
+                           f"User {discord_user['full_username']} tried to verify again (already verified)")
             
             return jsonify({
                 "success": False,
@@ -421,6 +549,10 @@ def create_app():
             log_security_event("BANNED_IP_ATTEMPT", 
                              discord_user["id"],
                              f"Banned IP attempted verification: {ip_addr}")
+            
+            send_alert_webhook("Banned IP Attempt", "high",
+                             f"Banned IP {ip_addr} attempted verification as {discord_user['full_username']}")
+            
             return jsonify({
                 "success": False,
                 "error": "Your IP address is banned from verification.",
@@ -443,7 +575,6 @@ def create_app():
                 "guild_id": Config.GUILD_ID if hasattr(Config, 'GUILD_ID') else None
             }
             
-            # Add or update user
             success = db_manager.add_user(user_data)
             
             if success:
@@ -466,25 +597,9 @@ def create_app():
                                  discord_user["id"],
                                  f"User {discord_user['full_username']} verified successfully from IP: {ip_addr}")
                 
-                # Send to Discord webhook
-                if hasattr(Config, 'WEBHOOK_URL') and Config.WEBHOOK_URL:
-                    try:
-                        embed = {
-                            "title": "✅ New User Verified",
-                            "description": f"**{discord_user['full_username']}** has been verified",
-                            "color": 0x00ff00,
-                            "fields": [
-                                {"name": "Discord ID", "value": discord_user["id"], "inline": True},
-                                {"name": "IP Address", "value": f"||{ip_addr}||", "inline": True},
-                                {"name": "Status", "value": "First-time verification", "inline": True}
-                            ],
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "footer": {"text": "KoalaHub Verification System"}
-                        }
-                        
-                        requests.post(Config.WEBHOOK_URL, json={"embeds": [embed]}, timeout=5)
-                    except Exception as e:
-                        logger.error(f"Failed to send webhook: {e}")
+                # Send to ALL webhooks
+                send_verification_webhook(discord_user, ip_addr)
+                send_log_webhook("User Verified", f"✅ {discord_user['full_username']} verified successfully")
                 
                 return jsonify({
                     "success": True,
@@ -514,17 +629,185 @@ def create_app():
                 "requires_oauth": False
             }), 500
 
+    @app.route("/api/unverify", methods=["POST"])
+    @limiter.limit("10 per minute")
+    def api_unverify():
+        """API endpoint to unverify a user (called by bot)"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"success": False, "error": "No data provided"}), 400
+            
+            discord_id = data.get("discord_id")
+            reason = data.get("reason", "Manual unverification")
+            admin_id = data.get("admin", "system")
+            
+            if not discord_id:
+                return jsonify({"success": False, "error": "No discord_id provided"}), 400
+            
+            # Check if user exists in database
+            user = db_manager.get_user(discord_id)
+            if not user:
+                return jsonify({"success": False, "error": "User not found in database"}), 404
+            
+            # Update user in database
+            user["verified_at"] = None
+            user["role_added"] = False
+            user["last_seen"] = datetime.utcnow()
+            
+            success = db_manager.add_user(user)
+            
+            if success:
+                # Add security log
+                db_manager.add_security_log({
+                    "type": "USER_UNVERIFIED",
+                    "user_id": discord_id,
+                    "ip_address": "0.0.0.0",  # From bot
+                    "details": f"User unverified by admin {admin_id}. Reason: {reason}",
+                    "timestamp": datetime.utcnow(),
+                    "level": "INFO"
+                })
+                
+                logger.info(f"User {discord_id} unverified via API by admin {admin_id}")
+                
+                # Send to webhooks
+                send_log_webhook("User Unverified", f"User <@{discord_id}> was unverified by admin {admin_id}")
+                send_alert_webhook("User Unverified", "medium", f"User <@{discord_id}> unverified by admin {admin_id}")
+                
+                return jsonify({
+                    "success": True,
+                    "message": f"User {discord_id} unverified successfully"
+                })
+            else:
+                return jsonify({"success": False, "error": "Failed to update database"}), 500
+                
+        except Exception as e:
+            logger.error(f"Unverify API error: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/force_verify", methods=["POST"])
+    @limiter.limit("10 per minute")
+    def api_force_verify():
+        """API endpoint for force verification (called by bot)"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"success": False, "error": "No data provided"}), 400
+            
+            discord_id = data.get("discord_id")
+            username = data.get("username", "Unknown")
+            admin_id = data.get("admin", "system")
+            
+            if not discord_id:
+                return jsonify({"success": False, "error": "No discord_id provided"}), 400
+            
+            # Check if user exists
+            user = db_manager.get_user(discord_id)
+            if user:
+                # Update existing user
+                user["verified_at"] = datetime.utcnow()
+                user["role_added"] = True
+                user["last_seen"] = datetime.utcnow()
+            else:
+                # Create new user
+                user = {
+                    "discord_id": discord_id,
+                    "username": username,
+                    "ip_address": "0.0.0.0",  # From bot
+                    "user_agent": "Bot Force Verify",
+                    "verified_at": datetime.utcnow(),
+                    "last_seen": datetime.utcnow(),
+                    "is_banned": False,
+                    "is_vpn": False,
+                    "attempts": 1,
+                    "role_added": True,
+                    "guild_id": Config.GUILD_ID if hasattr(Config, 'GUILD_ID') else None
+                }
+            
+            success = db_manager.add_user(user)
+            
+            if success:
+                # Add security log
+                db_manager.add_security_log({
+                    "type": "USER_FORCE_VERIFIED",
+                    "user_id": discord_id,
+                    "ip_address": "0.0.0.0",
+                    "details": f"User force verified by admin {admin_id}",
+                    "timestamp": datetime.utcnow(),
+                    "level": "INFO"
+                })
+                
+                logger.info(f"User {discord_id} force verified via API by admin {admin_id}")
+                
+                # Send to webhooks
+                send_log_webhook("User Force Verified", f"User {username} (<@{discord_id}>) was force verified by admin {admin_id}")
+                
+                return jsonify({
+                    "success": True,
+                    "message": f"User {discord_id} force verified successfully"
+                })
+            else:
+                return jsonify({"success": False, "error": "Failed to update database"}), 500
+                
+        except Exception as e:
+            logger.error(f"Force verify API error: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/test/webhook", methods=["GET"])
+    @admin_required
+    def test_webhook():
+        """Test webhook functionality"""
+        test_results = {}
+        
+        # Test main webhook
+        if Config.WEBHOOK_URL:
+            test_embed = {
+                "title": "✅ Webhook Test",
+                "description": "This is a test message from the verification system",
+                "color": 0x00ff00,
+                "timestamp": datetime.utcnow().isoformat(),
+                "footer": {"text": "Test System"}
+            }
+            success = send_webhook(Config.WEBHOOK_URL, test_embed, "Main Webhook Test")
+            test_results["main_webhook"] = "✅ Success" if success else "❌ Failed"
+        else:
+            test_results["main_webhook"] = "❌ Not configured"
+        
+        # Test logs webhook
+        if Config.LOGS_WEBHOOK:
+            success = send_log_webhook("Webhook Test", "Testing logs webhook functionality")
+            test_results["logs_webhook"] = "✅ Success" if success else "❌ Failed"
+        else:
+            test_results["logs_webhook"] = "❌ Not configured"
+        
+        # Test alerts webhook
+        if Config.ALERTS_WEBHOOK:
+            success = send_alert_webhook("Webhook Test", "low", "Testing alerts webhook")
+            test_results["alerts_webhook"] = "✅ Success" if success else "❌ Failed"
+        else:
+            test_results["alerts_webhook"] = "❌ Not configured"
+        
+        # Test backup webhook
+        if Config.BACKUP_WEBHOOK:
+            success = send_backup_notification("Webhook Test", "Testing backup webhook functionality")
+            test_results["backup_webhook"] = "✅ Success" if success else "❌ Failed"
+        else:
+            test_results["backup_webhook"] = "❌ Not configured"
+        
+        return jsonify({
+            "success": True,
+            "results": test_results
+        })
+
     # ================= DISCORD OAUTH ROUTES =================
 
     @app.route("/auth/discord")
     def auth_discord():
         """Start Discord OAuth flow"""
-        # Generate state for CSRF protection
         state = secrets.token_urlsafe(32)
         session["oauth_state"] = state
         session.permanent = True
         
-        # Discord OAuth2 URL
         discord_auth_url = (
             f"https://discord.com/api/oauth2/authorize?"
             f"client_id={Config.CLIENT_ID}&"
@@ -541,7 +824,6 @@ def create_app():
         code = request.args.get("code")
         state = request.args.get("state")
         
-        # Validate state
         if not code or state != session.get("oauth_state"):
             flash('❌ Invalid OAuth state. Please try again.', 'danger')
             return redirect(url_for("verify"))
@@ -549,7 +831,6 @@ def create_app():
         session.pop("oauth_state", None)
         
         try:
-            # Prepare token exchange data
             data = {
                 "client_id": Config.CLIENT_ID,
                 "client_secret": Config.CLIENT_SECRET,
@@ -561,7 +842,6 @@ def create_app():
             
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
             
-            # Exchange code for token with retry logic
             max_retries = 3
             access_token = None
             
@@ -589,14 +869,18 @@ def create_app():
                     else:
                         if attempt == max_retries - 1:
                             logger.error(f"Discord token exchange failed: {response.status_code}")
+                            send_alert_webhook("Discord OAuth Failed", "medium", 
+                                             f"Token exchange failed: {response.status_code}")
                             flash('❌ Failed to authenticate with Discord.', 'danger')
                             return redirect(url_for("verify", error="oauth_failed"))
                 except requests.exceptions.Timeout:
                     if attempt == max_retries - 1:
+                        send_alert_webhook("Discord OAuth Timeout", "medium", "Token exchange timeout")
                         flash('⏱️ Connection to Discord timed out.', 'danger')
                         return redirect(url_for("verify", error="network_error"))
                 except requests.exceptions.RequestException:
                     if attempt == max_retries - 1:
+                        send_alert_webhook("Discord OAuth Network Error", "medium", "Network error during token exchange")
                         flash('🔌 Network error connecting to Discord.', 'danger')
                         return redirect(url_for("verify", error="network_error"))
             
@@ -615,7 +899,6 @@ def create_app():
             if user_response.status_code == 200:
                 user_data = user_response.json()
                 
-                # Store user in session
                 session["discord_user"] = {
                     "id": str(user_data["id"]),
                     "username": user_data["username"],
@@ -625,14 +908,12 @@ def create_app():
                     "verified": user_data.get("verified", False)
                 }
                 
-                # Check if already verified
                 if db_manager.db is not None:
                     existing_user = db_manager.get_user(str(user_data["id"]))
                     if existing_user and existing_user.get("verified_at"):
                         session["is_verified"] = True
                         session["verification_date"] = existing_user.get("verified_at").isoformat() if existing_user.get("verified_at") else None
                 
-                # Ensure session is saved
                 session.permanent = True
                 session.modified = True
                 
@@ -640,15 +921,20 @@ def create_app():
                                  str(user_data["id"]),
                                  f"User {user_data['username']} authenticated")
                 
+                send_log_webhook("Discord Login", f"User {user_data['username']} logged in via Discord OAuth")
+                
                 flash('✅ Successfully connected to Discord! You can now verify.', 'success')
                 return redirect(url_for("verify"))
             else:
                 logger.error(f"Failed to get Discord user: {user_response.status_code}")
+                send_alert_webhook("Discord User Info Failed", "medium", 
+                                 f"Failed to get user info: {user_response.status_code}")
                 flash('❌ Failed to retrieve Discord profile.', 'danger')
                 return redirect(url_for("verify"))
             
         except Exception as e:
             logger.error(f"Unexpected error in callback: {e}")
+            send_alert_webhook("OAuth Callback Error", "high", f"Unexpected error: {str(e)[:200]}")
             flash('❌ An unexpected error occurred.', 'danger')
             return redirect(url_for("verify"))
 
@@ -658,6 +944,7 @@ def create_app():
         user_id = session.get("discord_user", {}).get("id")
         if user_id:
             log_security_event("DISCORD_LOGOUT", user_id=user_id)
+            send_log_webhook("Discord Logout", f"User {session['discord_user']['full_username']} logged out")
         
         session.pop("discord_user", None)
         session.pop("is_verified", None)
@@ -679,6 +966,7 @@ def create_app():
 
     @app.errorhandler(429)
     def rate_limit(e):
+        send_log_webhook("Rate Limit Exceeded", f"IP {get_client_ip()} hit rate limit on {request.path}")
         return jsonify({
             "error": "Rate limit exceeded",
             "retry_after": e.description
@@ -687,6 +975,8 @@ def create_app():
     @app.errorhandler(500)
     def internal(e):
         log_security_event("500_INTERNAL_ERROR", details=str(e), level="ERROR")
+        send_alert_webhook("500 Internal Server Error", "critical", 
+                         f"Error on {request.path}: {str(e)[:500]}")
         return render_template("error.html", error="500 - Internal server error"), 500
 
     return app

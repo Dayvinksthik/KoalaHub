@@ -64,17 +64,24 @@ class SecurityMonitorBot(commands.Bot):
     async def send_webhook(self, webhook_url: str, embed_data: Dict[str, Any], webhook_name: str = "Bot Webhook") -> bool:
         """Send embed to Discord webhook"""
         if not webhook_url:
+            logger.warning(f"No webhook URL provided for {webhook_name}")
             return False
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(webhook_url, json={"embeds": [embed_data]}) as response:
+                async with session.post(webhook_url, json={"embeds": [embed_data]}, timeout=10) as response:
                     if response.status in [200, 204]:
                         logger.info(f"✅ Bot webhook sent to {webhook_name}")
                         return True
                     else:
-                        logger.error(f"❌ Bot webhook {webhook_name} failed: {response.status}")
+                        logger.error(f"❌ Bot webhook {webhook_name} failed: {response.status} - {await response.text()}")
                         return False
+        except asyncio.TimeoutError:
+            logger.error(f"⏱️ Bot webhook {webhook_name} timeout")
+            return False
+        except aiohttp.ClientError as e:
+            logger.error(f"🔌 Bot webhook {webhook_name} connection error: {e}")
+            return False
         except Exception as e:
             logger.error(f"⚠️ Bot webhook {webhook_name} error: {e}")
             return False
@@ -168,6 +175,123 @@ class SecurityMonitorBot(commands.Bot):
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
         
+        # ============ UNVERIFY COMMAND ============
+        
+        @self.tree.command(name="unverify", description="Remove verification from a user")
+        @app_commands.checks.has_permissions(administrator=True)
+        @app_commands.describe(
+            user="User to unverify",
+            reason="Reason for unverification"
+        )
+        async def unverify_command(interaction: discord.Interaction, user: discord.Member, 
+                                 reason: Optional[str] = "Manual unverification"):
+            """Remove verification from a user"""
+            await interaction.response.defer(ephemeral=True)
+            
+            try:
+                if not hasattr(Config, 'VERIFIED_ROLE_ID') or not Config.VERIFIED_ROLE_ID:
+                    await interaction.followup.send("❌ Verified role not configured.", ephemeral=True)
+                    return
+                
+                verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
+                if not verified_role:
+                    await interaction.followup.send("❌ Verified role not found.", ephemeral=True)
+                    return
+                
+                # Check if user has the role
+                if verified_role not in user.roles:
+                    await interaction.followup.send(f"❌ {user.mention} is not verified.", ephemeral=True)
+                    return
+                
+                # Remove the role
+                await user.remove_roles(verified_role, reason=f"Unverified: {reason}")
+                
+                # Try to update database if available
+                db_updated = False
+                try:
+                    # Try to send API request to website to update database
+                    website_url = getattr(Config, 'WEBSITE_URL', '')
+                    if website_url:
+                        api_url = f"{website_url}/api/unverify"
+                        async with aiohttp.ClientSession() as session:
+                            data = {
+                                "discord_id": str(user.id),
+                                "reason": reason,
+                                "admin": str(interaction.user.id)
+                            }
+                            async with session.post(api_url, json=data, timeout=5) as response:
+                                if response.status == 200:
+                                    db_updated = True
+                                else:
+                                    db_updated = False
+                    else:
+                        db_updated = False
+                except Exception as e:
+                    logger.error(f"Database update error: {e}")
+                    db_updated = False
+                
+                # Send DM to user
+                try:
+                    dm_embed = discord.Embed(
+                        title="🔓 Verification Removed",
+                        description=f"Your verification has been removed from **{interaction.guild.name}**",
+                        color=discord.Color.orange(),
+                        timestamp=datetime.utcnow()
+                    )
+                    dm_embed.add_field(name="Reason", value=reason, inline=False)
+                    dm_embed.add_field(name="Removed By", value=f"{interaction.user.mention}", inline=False)
+                    
+                    await user.send(embed=dm_embed)
+                except Exception:
+                    pass  # Can't DM user
+                
+                embed = discord.Embed(
+                    title="✅ User Unverified",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                embed.add_field(name="User", value=f"{user.mention} ({user.id})", inline=True)
+                embed.add_field(name="Reason", value=reason, inline=True)
+                embed.add_field(name="Database Updated", value="✅ Yes" if db_updated else "❌ Failed", inline=True)
+                
+                embed.add_field(
+                    name="Note", 
+                    value="User will need to verify again to access verified channels.",
+                    inline=False
+                )
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+                # Log the unverification
+                self.log_security_event(
+                    "USER_UNVERIFIED",
+                    interaction,
+                    {"reason": reason, "user": str(user)},
+                    "user_unverified"
+                )
+                
+                # Send alert to webhook
+                webhook_url = os.getenv('DISCORD_ALERTS_WEBHOOK')
+                if webhook_url:
+                    webhook_embed = {
+                        "title": "🔓 User Unverified",
+                        "description": f"**{user}** has been unverified",
+                        "color": 0xffa500,  # Orange
+                        "fields": [
+                            {"name": "User", "value": f"{user.mention} ({user.id})", "inline": True},
+                            {"name": "Reason", "value": reason, "inline": True},
+                            {"name": "Unverified By", "value": f"{interaction.user.mention}", "inline": True}
+                        ],
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "footer": {"text": "Security System"}
+                    }
+                    await self.send_webhook(webhook_url, webhook_embed, "Alerts Webhook")
+                
+            except Exception as e:
+                logger.error(f"Unverify error: {e}")
+                await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+        
         # ============ ADMIN COMMANDS ============
         
         @self.tree.command(name="ban", description="Ban a user (with IP ban & auto-kick)")
@@ -235,7 +359,6 @@ class SecurityMonitorBot(commands.Bot):
                 role_removed = False
                 if hasattr(Config, 'VERIFIED_ROLE_ID') and Config.VERIFIED_ROLE_ID:
                     verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
-                    # user may be a discord.User (not Member) so fetch member if possible
                     member_obj = None
                     try:
                         member_obj = await interaction.guild.fetch_member(user.id)
@@ -280,7 +403,7 @@ class SecurityMonitorBot(commands.Bot):
                     "user_banned"
                 )
 
-                # New: send alert to webhook if configured
+                # Send alert to webhook if configured
                 webhook_url = os.getenv('DISCORD_ALERTS_WEBHOOK')
                 if webhook_url:
                     webhook_embed = {
@@ -462,7 +585,7 @@ class SecurityMonitorBot(commands.Bot):
             
             embed.add_field(
                 name="🔐 Verification Commands",
-                value="• `/setup` - Create verification panel\n• `/verify_status [user]` - Check verification status",
+                value="• `/setup` - Create verification panel\n• `/verify_status [user]` - Check verification status\n• `/force_verify [user]` - Manually verify a user\n• `/unverify [user]` - Remove verification from a user",
                 inline=False
             )
             
@@ -514,6 +637,22 @@ class SecurityMonitorBot(commands.Bot):
                 )
                 
                 await interaction.response.send_message(embed=embed, ephemeral=True)
+                
+                # Update database if possible
+                try:
+                    website_url = getattr(Config, 'WEBSITE_URL', '')
+                    if website_url:
+                        api_url = f"{website_url}/api/force_verify"
+                        async with aiohttp.ClientSession() as session:
+                            data = {
+                                "discord_id": str(user.id),
+                                "username": str(user),
+                                "admin": str(interaction.user.id)
+                            }
+                            async with session.post(api_url, json=data, timeout=5):
+                                pass
+                except Exception as e:
+                    logger.error(f"Force verify DB update error: {e}")
                 
             except discord.Forbidden:
                 await interaction.response.send_message("❌ No permission to add role.", ephemeral=True)

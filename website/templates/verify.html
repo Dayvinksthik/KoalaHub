@@ -68,6 +68,9 @@
                             <div class="user-details">
                                 <h3>{{ discord_user.full_username }}</h3>
                                 <p><i class="fas fa-check-circle" style="color: green;"></i> Already Verified</p>
+                                {% if session.verification_date %}
+                                <p><small>Verified on: {{ session.verification_date[:10] }}</small></p>
+                                {% endif %}
                             </div>
                         </div>
                         
@@ -76,6 +79,7 @@
                                 <i class="fas fa-check-circle fa-3x" style="color: green;"></i>
                                 <h3 style="color: green;">Already Verified!</h3>
                                 <p>✅ You are already verified and don't need to verify again.</p>
+                                <p><small>Return to Discord to access all channels.</small></p>
                             </div>
                         </div>
                         
@@ -103,6 +107,10 @@
                         <button id="startVerification" class="btn-verify">
                             <i class="fas fa-check-circle"></i> Start Verification
                         </button>
+                        
+                        <p class="small-text">
+                            <i class="fas fa-info-circle"></i> This will verify your account and grant you access to all channels.
+                        </p>
                     </div>
                     {% endif %}
                 </div>
@@ -110,6 +118,7 @@
             
             <div class="verification-footer">
                 <p><i class="fas fa-lock"></i> Powered by KoalaHub Security</p>
+                <p><small>Need help? <a href="{{ url_for('feedback') }}">Contact Support</a></small></p>
             </div>
         </div>
     </div>
@@ -122,15 +131,20 @@
             button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
             button.disabled = true;
             
-            showResult('<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Verifying...</div>', 'loading');
+            // Show loading message
+            showResult('<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Starting verification...</div>', 'loading');
             
             try {
+                // Add CSRF token to headers
+                const csrfToken = '{{ csrf_token }}';
+                
                 const response = await fetch('/api/verify', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'X-CSRF-Token': '{{ csrf_token }}'
-                    }
+                        'X-CSRF-Token': csrfToken
+                    },
+                    body: JSON.stringify({})
                 });
                 
                 const data = await response.json();
@@ -140,38 +154,70 @@
                         <div style="text-align: center; padding: 20px;">
                             <i class="fas fa-check-circle fa-3x" style="color: green;"></i>
                             <h3 style="color: green;">Verification Successful!</h3>
-                            <p>✅ ${data.data.message}</p>
+                            <p>✅ ${data.data.message || 'You have been verified!'}</p>
+                            <p><small>The Verified role should be added to your Discord account shortly.</small></p>
+                            <button onclick="location.reload()" class="btn-verify" style="margin-top: 15px;">
+                                <i class="fas fa-redo"></i> Refresh Status
+                            </button>
                         </div>
                     `, 'success');
                     
+                    // Update the page to show verified status
                     setTimeout(() => {
-                        window.location.reload();
+                        location.reload();
                     }, 3000);
                 } else {
+                    let errorMessage = data.error || 'Unknown error occurred';
+                    
                     if (data.already_verified) {
                         showResult(`
                             <div style="text-align: center; padding: 20px;">
                                 <i class="fas fa-check-circle fa-3x" style="color: orange;"></i>
                                 <h3 style="color: orange;">Already Verified</h3>
                                 <p>✅ You are already verified!</p>
+                                <p><small>No need to verify again. Return to Discord to access all channels.</small></p>
+                                <button onclick="location.reload()" class="btn-verify" style="margin-top: 15px;">
+                                    <i class="fas fa-redo"></i> Refresh Status
+                                </button>
                             </div>
                         `, 'info');
-                        
-                        setTimeout(() => {
-                            window.location.reload();
-                        }, 2000);
+                    } else if (data.requires_oauth) {
+                        showResult(`
+                            <div style="text-align: center; padding: 20px;">
+                                <i class="fas fa-exclamation-triangle fa-3x" style="color: red;"></i>
+                                <h3 style="color: red;">Discord Login Required</h3>
+                                <p>❌ Please login with Discord first.</p>
+                                <a href="{{ url_for('auth_discord') }}" class="btn-discord" style="margin-top: 15px;">
+                                    <i class="fab fa-discord"></i> Login with Discord
+                                </a>
+                            </div>
+                        `, 'error');
                     } else {
                         showResult(`
                             <div style="text-align: center; padding: 20px;">
                                 <i class="fas fa-times-circle fa-3x" style="color: red;"></i>
                                 <h3 style="color: red;">Verification Failed</h3>
-                                <p>❌ ${data.error}</p>
+                                <p>❌ ${errorMessage}</p>
+                                <p><small>Please contact server administrators if this error persists.</small></p>
+                                <a href="{{ url_for('feedback') }}" class="btn-verify" style="background: #3498db; margin-top: 15px;">
+                                    <i class="fas fa-question-circle"></i> Get Help
+                                </a>
                             </div>
                         `, 'error');
                     }
                 }
             } catch (error) {
-                showResult('<div style="color: red;">Error connecting to server.</div>', 'error');
+                console.error('Verification error:', error);
+                showResult(`
+                    <div style="text-align: center; padding: 20px;">
+                        <i class="fas fa-exclamation-triangle fa-3x" style="color: red;"></i>
+                        <h3 style="color: red;">Connection Error</h3>
+                        <p>❌ Unable to connect to server. Please check your internet connection and try again.</p>
+                        <button onclick="location.reload()" class="btn-verify" style="margin-top: 15px;">
+                            <i class="fas fa-redo"></i> Try Again
+                        </button>
+                    </div>
+                `, 'error');
             } finally {
                 button.innerHTML = originalText;
                 button.disabled = false;
@@ -180,8 +226,19 @@
         
         function showResult(message, type) {
             const resultDiv = document.getElementById('verificationResult');
-            resultDiv.innerHTML = `<div class="result-${type}">${message}</div>`;
+            if (resultDiv) {
+                resultDiv.innerHTML = `<div class="result-${type}">${message}</div>`;
+                resultDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
         }
+        
+        // Auto-focus the verification button when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            const verifyButton = document.getElementById('startVerification');
+            if (verifyButton) {
+                verifyButton.focus();
+            }
+        });
     </script>
 </body>
 </html>
