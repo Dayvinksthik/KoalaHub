@@ -70,13 +70,13 @@ def create_app():
 
     CORS(app, origins=[Config.WEBSITE_URL, "http://localhost:10000", "https://koalahub.onrender.com", "http://localhost:5000"])
 
+    # FIXED: Removed duplicate key_func parameter
     limiter = Limiter(
-        get_remote_address,
         app=app,
+        key_func=get_remote_address,
         storage_uri="memory://",
         default_limits=["200 per day", "50 per hour"],
-        strategy="fixed-window",  # Changed from "moving-window" for better compatibility
-        key_func=lambda: request.remote_addr or "127.0.0.1"
+        strategy="fixed-window"
     )
 
     # ================= WEBHOOK FUNCTIONS =================
