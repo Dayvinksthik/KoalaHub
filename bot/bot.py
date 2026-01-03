@@ -102,19 +102,7 @@ class SecurityMonitorBot(commands.Bot):
                           "This verification is required to access all channels.\n"
                           "Powered by KoalaHub security systems.",
                 color=discord.Color.blue(),
-                timestamp=datetime.utcnow()
-            )
-            
-            embed.add_field(
-                name="⚠️ Requirements",
-                value="• Must follow server rules\n• No VPN/Proxy\n• One account per person",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="✅ Benefits",
-                value="• Access to all channels\n• Priority support\n• Community features",
-                inline=False
+                timestamp=datetime.now(datetime.timezone.utc)
             )
             
             embed.set_footer(text="Protecting our community")
