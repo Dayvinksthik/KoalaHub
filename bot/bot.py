@@ -98,15 +98,14 @@ class SecurityMonitorBot(commands.Bot):
             """Setup verification panel"""
             embed = discord.Embed(
                 title="🔐 SERVER VERIFICATION",
-                description="**Click the button below to verify**\n\n"
-                          "This verification is required to access all channels.\n"
-                          "Powered by KoalaHub security systems.",
+                description=(
+                    "This verification is required to access all channels.\n"
+                    "Powered by KoalaHub security systems."
+                ),
                 color=discord.Color.blue(),
-                timestamp=datetime.now(datetime.timezone.utc)
+                timestamp=datetime.utcnow()
             )
-            
-            embed.set_footer(text="Protecting our community")
-            
+
             view = discord.ui.View(timeout=None)
             verify_button = discord.ui.Button(
                 label="✅ Start Verification",
@@ -115,12 +114,12 @@ class SecurityMonitorBot(commands.Bot):
                 emoji="🔐"
             )
             view.add_item(verify_button)
-            
+
             await interaction.response.send_message(
                 "✅ Verification panel created!",
                 ephemeral=True
             )
-            
+
             await interaction.channel.send(embed=embed, view=view)
         
         @self.tree.command(name="verify_status", description="Check verification status")
