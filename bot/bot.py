@@ -13,6 +13,7 @@ import re
 import urllib.parse
 import psutil
 import humanize
+import traceback
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ load_dotenv()
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from utils.logger import logger
+from database.connection import db_manager
 
 class SecurityMonitorBot(commands.Bot):
     """Complete Discord bot with security monitoring"""
@@ -42,7 +44,8 @@ class SecurityMonitorBot(commands.Bot):
             "messages_checked": 0,
             "security_events": 0,
             "auto_kicks": 0,
-            "commands_executed": 0
+            "commands_executed": 0,
+            "roles_assigned": 0
         }
         
         self.security_events: List[Dict[str, Any]] = []
@@ -55,8 +58,6 @@ class SecurityMonitorBot(commands.Bot):
     def load_banned_data(self):
         """Load banned users and IPs from database"""
         try:
-            # This would connect to your database
-            # For now, we'll keep it in memory
             logger.info("✅ Bot initialized with security monitoring")
         except Exception as e:
             logger.error(f"❌ Failed to load banned data: {e}")
@@ -135,6 +136,13 @@ class SecurityMonitorBot(commands.Bot):
             
             is_verified = verified_role and verified_role in getattr(target_user, "roles", [])
             
+            # Check database status
+            db_verified = False
+            if db_manager.db is not None:
+                user_data = db_manager.get_user(str(target_user.id))
+                if user_data and user_data.get("verified_at"):
+                    db_verified = True
+            
             embed = discord.Embed(
                 title=f"🔍 Verification Status - {getattr(target_user, 'display_name', str(target_user))}",
                 color=discord.Color.green() if is_verified else discord.Color.red(),
@@ -142,15 +150,21 @@ class SecurityMonitorBot(commands.Bot):
             )
             
             embed.add_field(
-                name="Status",
-                value="✅ **Verified**" if is_verified else "❌ **Not Verified**",
+                name="Role Status",
+                value="✅ **Has Verified Role**" if is_verified else "❌ **No Verified Role**",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Database Status",
+                value="✅ **Verified in DB**" if db_verified else "❌ **Not in DB**",
                 inline=True
             )
             
             embed.add_field(
                 name="User",
                 value=f"{getattr(target_user, 'mention', str(target_user))}\n`{getattr(target_user, 'id', 'unknown')}`",
-                inline=True
+                inline=False
             )
             
             if not is_verified and target_user == interaction.user:
@@ -160,7 +174,266 @@ class SecurityMonitorBot(commands.Bot):
                     inline=False
                 )
             
+            if is_verified and not db_verified:
+                embed.add_field(
+                    name="⚠️ Warning",
+                    value="User has role but not in database. Use `/sync_roles` to fix.",
+                    inline=False
+                )
+            
+            if db_verified and not is_verified:
+                embed.add_field(
+                    name="ℹ️ Information",
+                    value="User is verified in database but missing role. Role will be assigned automatically.",
+                    inline=False
+                )
+            
             await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        # ============ ROLE ASSIGNMENT COMMANDS ============
+        
+        @self.tree.command(name="assign_roles", description="Manually assign verified roles to all verified users")
+        @app_commands.checks.has_permissions(administrator=True)
+        async def assign_roles_command(interaction: discord.Interaction):
+            """Manually assign verified roles to all verified users"""
+            await interaction.response.defer(ephemeral=True)
+            
+            try:
+                if not hasattr(Config, 'VERIFIED_ROLE_ID') or not Config.VERIFIED_ROLE_ID:
+                    await interaction.followup.send("❌ Verified role not configured.", ephemeral=True)
+                    return
+                
+                verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
+                if not verified_role:
+                    await interaction.followup.send("❌ Verified role not found.", ephemeral=True)
+                    return
+                
+                if db_manager.db is None:
+                    await interaction.followup.send("❌ Database not connected.", ephemeral=True)
+                    return
+                
+                # Get all verified users from database
+                users = list(db_manager.db.users.find({
+                    "verified_at": {"$ne": None},
+                    "is_banned": False
+                }))
+                
+                if not users:
+                    await interaction.followup.send("✅ No verified users found in database.", ephemeral=True)
+                    return
+                
+                assigned_count = 0
+                failed_count = 0
+                already_has_role = 0
+                
+                embed = discord.Embed(
+                    title="🔄 Assigning Verified Roles",
+                    description=f"Processing {len(users)} verified users...",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+                for user in users:
+                    discord_id = user.get("discord_id")
+                    if not discord_id:
+                        continue
+                    
+                    try:
+                        member = await interaction.guild.fetch_member(int(discord_id))
+                        
+                        # Check if member already has the role
+                        if verified_role in member.roles:
+                            already_has_role += 1
+                            # Update database anyway
+                            db_manager.db.users.update_one(
+                                {"discord_id": discord_id},
+                                {"$set": {"role_added": True}}
+                            )
+                            continue
+                        
+                        # Add the role
+                        await member.add_roles(
+                            verified_role, 
+                            reason="Manual role assignment by admin"
+                        )
+                        
+                        # Update database
+                        db_manager.db.users.update_one(
+                            {"discord_id": discord_id},
+                            {"$set": {"role_added": True}}
+                        )
+                        
+                        assigned_count += 1
+                        
+                        # Send DM notification
+                        try:
+                            dm_embed = discord.Embed(
+                                title="✅ Verified Role Assigned",
+                                description=f"Your verified role has been manually assigned in **{interaction.guild.name}**.",
+                                color=discord.Color.green(),
+                                timestamp=datetime.utcnow()
+                            )
+                            dm_embed.add_field(
+                                name="Role",
+                                value=f"**{verified_role.name}**",
+                                inline=False
+                            )
+                            dm_embed.add_field(
+                                name="Assigned By",
+                                value=f"{interaction.user.mention}",
+                                inline=False
+                            )
+                            dm_embed.set_footer(text="Powered by KoalaHub Security System")
+                            
+                            await member.send(embed=dm_embed)
+                        except discord.Forbidden:
+                            pass  # Can't DM user
+                        
+                        # Small delay to avoid rate limiting
+                        await asyncio.sleep(0.5)
+                        
+                    except discord.NotFound:
+                        logger.warning(f"Member {discord_id} not found in guild")
+                        failed_count += 1
+                    except discord.Forbidden:
+                        logger.error(f"No permission to add role to {discord_id}")
+                        failed_count += 1
+                    except Exception as e:
+                        logger.error(f"Error assigning role to {discord_id}: {e}")
+                        failed_count += 1
+                
+                # Send result
+                result_embed = discord.Embed(
+                    title="✅ Role Assignment Complete",
+                    color=discord.Color.green(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                result_embed.add_field(name="Total Verified Users", value=str(len(users)), inline=True)
+                result_embed.add_field(name="New Roles Assigned", value=str(assigned_count), inline=True)
+                result_embed.add_field(name="Already Had Role", value=str(already_has_role), inline=True)
+                result_embed.add_field(name="Failed", value=str(failed_count), inline=True)
+                
+                if assigned_count > 0:
+                    result_embed.add_field(
+                        name="Success", 
+                        value=f"✅ Successfully assigned verified role to {assigned_count} user(s)",
+                        inline=False
+                    )
+                
+                await interaction.edit_original_response(embed=result_embed)
+                
+                # Log the action
+                self.log_security_event(
+                    "MANUAL_ROLE_ASSIGNMENT",
+                    interaction,
+                    {"assigned": assigned_count, "failed": failed_count, "total": len(users)},
+                    "role_assignment"
+                )
+                
+                # Send webhook notification
+                webhook_url = os.getenv('DISCORD_LOGS_WEBHOOK')
+                if webhook_url and assigned_count > 0:
+                    webhook_embed = {
+                        "title": "✅ Manual Role Assignment Complete",
+                        "description": f"Admin {interaction.user} manually assigned verified roles",
+                        "color": 0x00ff00,
+                        "fields": [
+                            {"name": "Admin", "value": f"{interaction.user.mention}", "inline": True},
+                            {"name": "New Roles Assigned", "value": str(assigned_count), "inline": True},
+                            {"name": "Total Processed", "value": str(len(users)), "inline": True},
+                            {"name": "Already Had Role", "value": str(already_has_role), "inline": True},
+                            {"name": "Failed", "value": str(failed_count), "inline": True}
+                        ],
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "footer": {"text": "Manual Role Assignment"}
+                    }
+                    await self.send_webhook(webhook_url, webhook_embed, "Role Assignment Webhook")
+                
+            except Exception as e:
+                logger.error(f"Error in assign_roles command: {e}")
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+        
+        @self.tree.command(name="sync_roles", description="Sync database with current role holders")
+        @app_commands.checks.has_permissions(administrator=True)
+        async def sync_roles_command(interaction: discord.Interaction):
+            """Sync database with current role holders"""
+            await interaction.response.defer(ephemeral=True)
+            
+            try:
+                if not hasattr(Config, 'VERIFIED_ROLE_ID') or not Config.VERIFIED_ROLE_ID:
+                    await interaction.followup.send("❌ Verified role not configured.", ephemeral=True)
+                    return
+                
+                verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
+                if not verified_role:
+                    await interaction.followup.send("❌ Verified role not found.", ephemeral=True)
+                    return
+                
+                if db_manager.db is None:
+                    await interaction.followup.send("❌ Database not connected.", ephemeral=True)
+                    return
+                
+                # Get all members with the verified role
+                members_with_role = []
+                async for member in interaction.guild.fetch_members(limit=None):
+                    if verified_role in member.roles:
+                        members_with_role.append(str(member.id))
+                
+                # Update database for users with role
+                updated_count = 0
+                for discord_id in members_with_role:
+                    user_data = db_manager.get_user(discord_id)
+                    if user_data:
+                        # Update role_added flag
+                        db_manager.db.users.update_one(
+                            {"discord_id": discord_id},
+                            {"$set": {"role_added": True}}
+                        )
+                        updated_count += 1
+                    else:
+                        # User has role but not in database - create entry
+                        user_data = {
+                            "discord_id": discord_id,
+                            "username": f"Synced User {discord_id}",
+                            "ip_address": "0.0.0.0",
+                            "user_agent": "Role Sync",
+                            "verified_at": datetime.utcnow(),
+                            "last_seen": datetime.utcnow(),
+                            "is_banned": False,
+                            "is_vpn": False,
+                            "attempts": 1,
+                            "role_added": True,
+                            "guild_id": str(interaction.guild.id)
+                        }
+                        db_manager.add_user(user_data)
+                        updated_count += 1
+                
+                embed = discord.Embed(
+                    title="✅ Role Sync Complete",
+                    color=discord.Color.green(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                embed.add_field(name="Role", value=verified_role.name, inline=True)
+                embed.add_field(name="Members With Role", value=str(len(members_with_role)), inline=True)
+                embed.add_field(name="Database Updated", value=str(updated_count), inline=True)
+                
+                embed.add_field(
+                    name="Note",
+                    value="Database has been synced with current role holders.",
+                    inline=False
+                )
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+                logger.info(f"✅ Role sync completed by {interaction.user}: {len(members_with_role)} members with role")
+                
+            except Exception as e:
+                logger.error(f"Error in sync_roles command: {e}")
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
         
         # ============ UNVERIFY COMMAND ============
         
@@ -186,12 +459,12 @@ class SecurityMonitorBot(commands.Bot):
                     return
                 
                 # Check if user has the role
-                if verified_role not in user.roles:
-                    await interaction.followup.send(f"❌ {user.mention} is not verified.", ephemeral=True)
-                    return
-                
-                # Remove the role
-                await user.remove_roles(verified_role, reason=f"Unverified: {reason}")
+                if verified_role in user.roles:
+                    # Remove the role
+                    await user.remove_roles(verified_role, reason=f"Unverified: {reason}")
+                    role_removed = True
+                else:
+                    role_removed = False
                 
                 # Try to update database if available
                 db_updated = False
@@ -240,6 +513,7 @@ class SecurityMonitorBot(commands.Bot):
                 
                 embed.add_field(name="User", value=f"{user.mention} ({user.id})", inline=True)
                 embed.add_field(name="Reason", value=reason, inline=True)
+                embed.add_field(name="Role Removed", value="✅ Yes" if role_removed else "❌ Not had role", inline=True)
                 embed.add_field(name="Database Updated", value="✅ Yes" if db_updated else "❌ Failed", inline=True)
                 
                 embed.add_field(
@@ -268,7 +542,8 @@ class SecurityMonitorBot(commands.Bot):
                         "fields": [
                             {"name": "User", "value": f"{user.mention} ({user.id})", "inline": True},
                             {"name": "Reason", "value": reason, "inline": True},
-                            {"name": "Unverified By", "value": f"{interaction.user.mention}", "inline": True}
+                            {"name": "Unverified By", "value": f"{interaction.user.mention}", "inline": True},
+                            {"name": "Role Removed", "value": "Yes" if role_removed else "No", "inline": True}
                         ],
                         "timestamp": datetime.utcnow().isoformat(),
                         "footer": {"text": "Security System"}
@@ -468,9 +743,22 @@ class SecurityMonitorBot(commands.Bot):
             embed.add_field(name="Messages Checked", value=self.performance_metrics["messages_checked"], inline=True)
             embed.add_field(name="Auto-Kicks", value=self.performance_metrics["auto_kicks"], inline=True)
             embed.add_field(name="Security Events", value=self.performance_metrics["security_events"], inline=True)
+            embed.add_field(name="Roles Assigned", value=self.performance_metrics["roles_assigned"], inline=True)
             embed.add_field(name="Banned Users", value=len(self.banned_users), inline=True)
-            embed.add_field(name="Banned IPs", value=len(self.banned_ips), inline=True)
             embed.add_field(name="Latency", value=f"{round(self.latency * 1000)}ms", inline=True)
+            
+            # Add database stats if available
+            if db_manager.db is not None:
+                try:
+                    total_users = db_manager.db.users.count_documents({})
+                    verified_users = db_manager.db.users.count_documents({"verified_at": {"$ne": None}})
+                    roles_added = db_manager.db.users.count_documents({"role_added": True})
+                    
+                    embed.add_field(name="Total Users (DB)", value=total_users, inline=True)
+                    embed.add_field(name="Verified Users (DB)", value=verified_users, inline=True)
+                    embed.add_field(name="Roles Added (DB)", value=roles_added, inline=True)
+                except Exception as e:
+                    logger.error(f"Error getting DB stats: {e}")
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
         
@@ -578,7 +866,7 @@ class SecurityMonitorBot(commands.Bot):
             
             embed.add_field(
                 name="👑 Admin Commands",
-                value="• `/ban [user] [reason]` - Ban user (IP ban + auto-kick)\n• `/unban [user_id]` - Unban user\n• `/bot_stats` - View bot statistics\n• `/banlist` - View banned users",
+                value="• `/ban [user] [reason]` - Ban user (IP ban + auto-kick)\n• `/unban [user_id]` - Unban user\n• `/bot_stats` - View bot statistics\n• `/banlist` - View banned users\n• `/assign_roles` - Assign verified roles to all verified users\n• `/sync_roles` - Sync database with current role holders",
                 inline=False
             )
             
@@ -590,7 +878,7 @@ class SecurityMonitorBot(commands.Bot):
             
             embed.add_field(
                 name="⚡ Features",
-                value="• **Auto-Kick System**: Banned users are automatically kicked when they try to join\n• **IP Banning**: Bans include IP addresses\n• **Security Monitoring**: Scans for malicious links\n• **Web Integration**: Connects to verification website",
+                value="• **Auto-Kick System**: Banned users are automatically kicked when they try to join\n• **IP Banning**: Bans include IP addresses\n• **Security Monitoring**: Scans for malicious links\n• **Web Integration**: Connects to verification website\n• **Auto-Role Assignment**: Automatically assigns verified role to verified users",
                 inline=False
             )
             
@@ -615,7 +903,25 @@ class SecurityMonitorBot(commands.Bot):
                 return
             
             try:
+                # Add the role
                 await user.add_roles(verified_role, reason=f"Force verified by {interaction.user}")
+                
+                # Update database
+                if db_manager.db is not None:
+                    user_data = {
+                        "discord_id": str(user.id),
+                        "username": str(user),
+                        "ip_address": "0.0.0.0",
+                        "user_agent": "Bot Force Verify",
+                        "verified_at": datetime.utcnow(),
+                        "last_seen": datetime.utcnow(),
+                        "is_banned": False,
+                        "is_vpn": False,
+                        "attempts": 1,
+                        "role_added": True,
+                        "guild_id": str(interaction.guild.id)
+                    }
+                    db_manager.add_user(user_data)
                 
                 embed = discord.Embed(
                     title="✅ User Force Verified",
@@ -625,7 +931,7 @@ class SecurityMonitorBot(commands.Bot):
                 
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 
-                # Update database if possible
+                # Update website database if possible
                 try:
                     website_url = getattr(Config, 'WEBSITE_URL', '')
                     if website_url:
@@ -639,7 +945,7 @@ class SecurityMonitorBot(commands.Bot):
                             async with session.post(api_url, json=data, timeout=5):
                                 pass
                 except Exception as e:
-                    logger.error(f"Force verify DB update error: {e}")
+                    logger.error(f"Force verify website update error: {e}")
                 
             except discord.Forbidden:
                 await interaction.response.send_message("❌ No permission to add role.", ephemeral=True)
@@ -736,6 +1042,233 @@ class SecurityMonitorBot(commands.Bot):
         
         return False
     
+    @tasks.loop(minutes=1)
+    async def assign_verified_roles_task(self):
+        """Background task to assign verified roles to verified users"""
+        try:
+            if not hasattr(Config, 'GUILD_ID') or not Config.GUILD_ID:
+                return
+            
+            if not hasattr(Config, 'VERIFIED_ROLE_ID') or not Config.VERIFIED_ROLE_ID:
+                return
+            
+            guild = self.get_guild(int(Config.GUILD_ID))
+            if not guild:
+                logger.error(f"Guild with ID {Config.GUILD_ID} not found")
+                return
+            
+            verified_role = guild.get_role(int(Config.VERIFIED_ROLE_ID))
+            if not verified_role:
+                logger.error(f"Verified role with ID {Config.VERIFIED_ROLE_ID} not found")
+                return
+            
+            if db_manager.db is None:
+                logger.error("Database not connected")
+                return
+            
+            # Get verified users who don't have role_added flag
+            users = list(db_manager.db.users.find({
+                "verified_at": {"$ne": None},
+                "role_added": False,
+                "is_banned": False
+            }).limit(50))  # Process 50 at a time
+            
+            if not users:
+                return
+            
+            assigned_count = 0
+            error_count = 0
+            
+            for user in users:
+                try:
+                    discord_id = user.get("discord_id")
+                    if not discord_id:
+                        continue
+                    
+                    # Try to get member
+                    try:
+                        member = await guild.fetch_member(int(discord_id))
+                    except discord.NotFound:
+                        logger.warning(f"Member {discord_id} not found in guild, skipping")
+                        # Mark as processed anyway
+                        db_manager.db.users.update_one(
+                            {"discord_id": discord_id},
+                            {"$set": {"role_added": True}}
+                        )
+                        continue
+                    except discord.HTTPException as e:
+                        logger.error(f"Error fetching member {discord_id}: {e}")
+                        error_count += 1
+                        continue
+                    
+                    # Check if member already has the role
+                    if verified_role in member.roles:
+                        logger.info(f"Member {member} already has verified role")
+                        db_manager.db.users.update_one(
+                            {"discord_id": discord_id},
+                            {"$set": {"role_added": True}}
+                        )
+                        continue
+                    
+                    # Add the role
+                    try:
+                        await member.add_roles(
+                            verified_role, 
+                            reason="Auto-verified through KoalaHub system"
+                        )
+                        
+                        # Update database
+                        db_manager.db.users.update_one(
+                            {"discord_id": discord_id},
+                            {"$set": {"role_added": True}}
+                        )
+                        
+                        # Send DM to user
+                        try:
+                            dm_embed = discord.Embed(
+                                title="✅ Verification Complete!",
+                                description=f"You have been verified in **{guild.name}**!",
+                                color=discord.Color.green(),
+                                timestamp=datetime.utcnow()
+                            )
+                            dm_embed.add_field(
+                                name="Role Granted",
+                                value=f"**{verified_role.name}** role has been added to your account.",
+                                inline=False
+                            )
+                            dm_embed.add_field(
+                                name="Access",
+                                value="You now have access to all verified channels.",
+                                inline=False
+                            )
+                            dm_embed.set_footer(text="Powered by KoalaHub Security System")
+                            
+                            await member.send(embed=dm_embed)
+                            logger.info(f"✅ Sent verification DM to {member}")
+                        except discord.Forbidden:
+                            logger.warning(f"Could not send DM to {member}")
+                        except Exception as e:
+                            logger.error(f"Error sending DM to {member}: {e}")
+                        
+                        assigned_count += 1
+                        self.performance_metrics["roles_assigned"] += 1
+                        logger.info(f"✅ Assigned verified role to {member} ({discord_id})")
+                        
+                        # Small delay to avoid rate limiting
+                        await asyncio.sleep(1)
+                        
+                    except discord.Forbidden:
+                        logger.error(f"No permission to add role to {member}")
+                        error_count += 1
+                    except discord.HTTPException as e:
+                        logger.error(f"Error adding role to {member}: {e}")
+                        error_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"Error processing user {user.get('discord_id', 'unknown')}: {e}")
+                    error_count += 1
+                    continue
+            
+            if assigned_count > 0:
+                logger.info(f"✅ Auto-assigned verified roles to {assigned_count} user(s)")
+                logger.info(f"❌ Failed to assign roles to {error_count} user(s)")
+                
+                # Send webhook notification
+                webhook_url = os.getenv('DISCORD_LOGS_WEBHOOK')
+                if webhook_url and assigned_count > 0:
+                    webhook_embed = {
+                        "title": "✅ Auto Role Assignment",
+                        "description": f"Automatically assigned verified roles to {assigned_count} user(s)",
+                        "color": 0x00ff00,
+                        "fields": [
+                            {"name": "Success", "value": str(assigned_count), "inline": True},
+                            {"name": "Failed", "value": str(error_count), "inline": True},
+                            {"name": "Guild", "value": guild.name, "inline": True}
+                        ],
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "footer": {"text": "Auto-Role System"}
+                    }
+                    await self.send_webhook(webhook_url, webhook_embed, "Role Assignment")
+        
+        except Exception as e:
+            logger.error(f"Error in assign_verified_roles_task: {e}")
+            logger.error(traceback.format_exc())
+    
+    async def check_and_assign_role(self, member: discord.Member) -> bool:
+        """Check if member should have verified role and assign it"""
+        try:
+            if not hasattr(Config, 'VERIFIED_ROLE_ID') or not Config.VERIFIED_ROLE_ID:
+                return False
+            
+            if db_manager.db is None:
+                return False
+            
+            # Check if user is verified in database
+            user_data = db_manager.get_user(str(member.id))
+            if not user_data or not user_data.get("verified_at") or user_data.get("is_banned"):
+                return False
+            
+            verified_role = member.guild.get_role(int(Config.VERIFIED_ROLE_ID))
+            if not verified_role:
+                return False
+            
+            # Check if already has role
+            if verified_role in member.roles:
+                return True
+            
+            # Add the role
+            await member.add_roles(
+                verified_role,
+                reason="Auto-assigned: User is verified in database"
+            )
+            
+            # Update database
+            db_manager.db.users.update_one(
+                {"discord_id": str(member.id)},
+                {"$set": {"role_added": True}}
+            )
+            
+            logger.info(f"✅ Auto-assigned verified role to {member}")
+            self.performance_metrics["roles_assigned"] += 1
+            
+            # Send welcome DM
+            try:
+                dm_embed = discord.Embed(
+                    title="✅ Welcome to the Server!",
+                    description=f"Welcome to **{member.guild.name}**!",
+                    color=discord.Color.green(),
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.add_field(
+                    name="Verification Complete",
+                    value="Your verification has been processed and your role has been assigned.",
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="Role",
+                    value=f"**{verified_role.name}**",
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="Access",
+                    value="You now have access to all verified channels.",
+                    inline=False
+                )
+                dm_embed.set_footer(text="Powered by KoalaHub Security System")
+                
+                await member.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass  # Can't DM user
+            
+            return True
+            
+        except discord.Forbidden:
+            logger.error(f"No permission to add role to {member}")
+        except Exception as e:
+            logger.error(f"Error assigning role to {member}: {e}")
+        
+        return False
+    
     def log_security_event(self, event_type: str, source, details: Dict[str, Any], action: str):
         """Log security event"""
         try:
@@ -799,7 +1332,7 @@ class SecurityMonitorBot(commands.Bot):
         logger.info("🤖 Security bot fully initialized and ready")
     
     async def on_member_join(self, member: discord.Member):
-        """Check new members for bans"""
+        """Check new members for bans and assign verified role if already verified"""
         self.performance_metrics["messages_checked"] += 1
         
         # Auto-kick banned users
@@ -812,6 +1345,55 @@ class SecurityMonitorBot(commands.Bot):
                 {"user": str(member), "guild": member.guild.name},
                 "user_kicked"
             )
+            return
+        
+        # Check if user is already verified and assign role
+        role_assigned = await self.check_and_assign_role(member)
+        if role_assigned:
+            self.log_security_event(
+                "AUTO_ROLE_ASSIGNED_ON_JOIN",
+                member,
+                {"user": str(member), "guild": member.guild.name},
+                "role_assigned"
+            )
+    
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Monitor role changes"""
+        # Check if verified role was removed
+        if not hasattr(Config, 'VERIFIED_ROLE_ID') or not Config.VERIFIED_ROLE_ID:
+            return
+        
+        verified_role_id = int(Config.VERIFIED_ROLE_ID)
+        
+        before_roles = {role.id for role in before.roles}
+        after_roles = {role.id for role in after.roles}
+        
+        # Check if verified role was removed
+        if verified_role_id in before_roles and verified_role_id not in after_roles:
+            logger.info(f"⚠️ Verified role removed from {after}")
+            
+            # Update database
+            if db_manager.db is not None:
+                db_manager.db.users.update_one(
+                    {"discord_id": str(after.id)},
+                    {"$set": {"role_added": False}}
+                )
+            
+            # Send alert
+            webhook_url = os.getenv('DISCORD_ALERTS_WEBHOOK')
+            if webhook_url:
+                webhook_embed = {
+                    "title": "⚠️ Verified Role Removed",
+                    "description": f"Verified role was removed from **{after}**",
+                    "color": 0xffa500,  # Orange
+                    "fields": [
+                        {"name": "User", "value": f"{after.mention} ({after.id})", "inline": True},
+                        {"name": "Action", "value": "Role Removed", "inline": True}
+                    ],
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "footer": {"text": "Security System"}
+                }
+                await self.send_webhook(webhook_url, webhook_embed, "Alerts Webhook")
     
     async def on_message(self, message: discord.Message):
         """Monitor all messages"""
@@ -840,6 +1422,13 @@ class SecurityMonitorBot(commands.Bot):
                 logger.info("✅ Started cleanup task")
             except Exception as e:
                 logger.error(f"Failed to start cleanup task: {e}")
+        
+        try:
+            if not self.assign_verified_roles_task.is_running():
+                self.assign_verified_roles_task.start()
+                logger.info("✅ Started verified role assignment task")
+        except Exception as e:
+            logger.error(f"Failed to start role assignment task: {e}")
     
     @tasks.loop(hours=24)
     async def cleanup_task(self):
@@ -875,6 +1464,12 @@ class SecurityMonitorBot(commands.Bot):
         try:
             if self.cleanup_task.is_running():
                 self.cleanup_task.cancel()
+        except Exception:
+            pass
+        
+        try:
+            if self.assign_verified_roles_task.is_running():
+                self.assign_verified_roles_task.cancel()
         except Exception:
             pass
         
