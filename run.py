@@ -1,8 +1,3 @@
-"""
-Main entry point for Discord Verification System
-Simplified version that fixes the bot startup issue
-"""
-
 import os
 import sys
 import threading

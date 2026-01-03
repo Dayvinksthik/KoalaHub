@@ -1,8 +1,3 @@
-"""
-Database Connection Manager
-Synchronous version for Flask website with connection pooling and caching
-"""
-
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 import redis

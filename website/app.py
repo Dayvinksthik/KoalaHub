@@ -1,8 +1,3 @@
-"""
-Discord Verification System - Website Application
-Complete version with all webhooks working
-"""
-
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, g, make_response
 from flask_cors import CORS
 from flask_limiter import Limiter
@@ -33,50 +28,65 @@ def create_app():
     # ================= SECURITY CONFIG =================
     app.config['SECRET_KEY'] = Config.SECRET_KEY
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=Config.SESSION_TIMEOUT_MINUTES)
-    app.config['SESSION_COOKIE_SECURE'] = True  # Set to False for local testing without HTTPS
+    app.config['SESSION_COOKIE_SECURE'] = True  # Set to True for HTTPS
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
     
-    # For Render deployment, we need to handle session properly
+    # For Render deployment
     app.config['SESSION_REFRESH_EACH_REQUEST'] = True
     
-    # Important: On Render, we might need to use a different session setup
-    app.config['SESSION_TYPE'] = 'filesystem'
-    app.config['SESSION_FILE_DIR'] = '/tmp/flask_session'
-    app.config['SESSION_FILE_THRESHOLD'] = 100
-
     # For development, allow HTTP cookies
     if os.environ.get('FLASK_ENV') == 'development':
         app.config['SESSION_COOKIE_SECURE'] = False
         app.config['PREFERRED_URL_SCHEME'] = 'http'
 
+    # ================= CSP CONFIGURATION =================
+    # FIXED: Proper CSP that allows external JavaScript files
     csp = {
         'default-src': ["'self'"],
         'style-src': ["'self'", "'unsafe-inline'", "https://cdnjs.cloudflare.com"],
-        'script-src': ["'self'"],
-        'font-src': ["'self'", "https://cdnjs.cloudflare.com"],
-        'img-src': ["'self'", "data:", "https:"],
-        'connect-src': ["'self'", "https://discord.com", "https://koalahub.onrender.com"]
+        'script-src': ["'self'", "'strict-dynamic'"],  # Allows external JS from same origin
+        'font-src': ["'self'", "https://cdnjs.cloudflare.com", "https://fonts.gstatic.com"],
+        'img-src': ["'self'", "data:", "https:", "http:"],
+        'connect-src': ["'self'", "https://discord.com", "https://discordapp.com", 
+                       "https://koalahub.onrender.com", "https://*.onrender.com"],
+        'frame-src': ["'self'", "https://discord.com"],
+        'object-src': ["'none'"],
+        'base-uri': ["'self'"],
+        'form-action': ["'self'"],
+        'frame-ancestors': ["'none'"],
+        'upgrade-insecure-requests': True
     }
-
+    
+    # Initialize Talisman with CSP
     Talisman(
         app,
         force_https=False if os.environ.get('FLASK_ENV') == 'development' else True,
-        session_cookie_secure=app.config['SESSION_COOKIE_SECURE'],
         content_security_policy=csp,
-        strict_transport_security=False if os.environ.get('FLASK_ENV') == 'development' else True,
-        frame_options='DENY'
+        content_security_policy_nonce_in=['script-src'],
+        session_cookie_secure=app.config['SESSION_COOKIE_SECURE'],
+        strict_transport_security=True,
+        strict_transport_security_max_age=31536000,
+        frame_options='DENY',
+        referrer_policy='strict-origin-when-cross-origin'
     )
 
-    CORS(app, origins=[Config.WEBSITE_URL, "http://localhost:10000", "https://koalahub.onrender.com", "http://localhost:5000"])
+    # CORS configuration
+    CORS(app, 
+         origins=[Config.WEBSITE_URL, "http://localhost:10000", 
+                 "https://koalahub.onrender.com", "http://localhost:5000"],
+         supports_credentials=True,
+         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+         allow_headers=["Content-Type", "X-CSRF-Token", "Authorization"])
 
-    # FIXED: Removed duplicate key_func parameter
+    # Rate limiting
     limiter = Limiter(
         app=app,
         key_func=get_remote_address,
         storage_uri="memory://",
         default_limits=["200 per day", "50 per hour"],
-        strategy="fixed-window"
+        strategy="fixed-window",
+        headers_enabled=True
     )
 
     # ================= WEBHOOK FUNCTIONS =================
@@ -336,12 +346,13 @@ def create_app():
         if not hasattr(g, 'start_time'):
             g.start_time = time.time()
         
-        # Generate CSRF token for all GET requests
-        if request.method == 'GET' and not request.path.startswith('/static'):
+        # Generate CSRF token for all GET requests that need it
+        if request.method == 'GET' and not request.path.startswith('/static') and not request.path.startswith('/api'):
             generate_csrf_token()
             
-        # Log request for debugging
-        logger.debug(f"Request: {request.method} {request.path} | IP: {get_client_ip()}")
+        # Log request for debugging (but not static files)
+        if not request.path.startswith('/static'):
+            logger.debug(f"Request: {request.method} {request.path} | IP: {get_client_ip()}")
 
     @app.after_request
     def after_request(response):
@@ -355,6 +366,11 @@ def create_app():
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['X-XSS-Protection'] = '1; mode=block'
+        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        
+        # Add CSP headers for API routes
+        if request.path.startswith('/api/'):
+            response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'none';"
         
         return response
 
@@ -386,7 +402,6 @@ def create_app():
                 session["is_verified"] = True
                 session["verification_date"] = user_data.get("verified_at").isoformat() if user_data.get("verified_at") else None
         
-        # Log verification page access
         logger.info(f"Verification page accessed. User: {discord_user.get('id') if discord_user else 'Not logged in'}, Verified: {is_verified}")
         
         return render_template("verify.html", 
@@ -397,7 +412,9 @@ def create_app():
     @app.route("/blocked")
     def blocked():
         """Blocked access page"""
-        return render_template("blocked.html")
+        reason = request.args.get('reason', 'Security violation')
+        expires = request.args.get('expires')
+        return render_template("blocked.html", reason=reason, expires=expires)
 
     @app.route("/feedback")
     def feedback():
@@ -411,7 +428,6 @@ def create_app():
         try:
             db_status = "unknown"
             if db_manager.db is not None:
-                # Try a simple query
                 db_manager.db.command('ping')
                 db_status = "connected"
             else:
@@ -590,12 +606,9 @@ def create_app():
     @require_csrf
     @limiter.limit("3 per minute")
     def api_verify():
-        """API endpoint for verification - FIXED VERSION"""
-        # Add debug logging
+        """API endpoint for verification"""
         ip_addr = get_client_ip()
         logger.info(f"Verification API called from IP: {ip_addr}")
-        logger.info(f"Session ID: {session.get('_id', 'No session ID')}")
-        logger.info(f"Session keys: {list(session.keys())}")
         
         # Get user agent
         user_agent = request.headers.get("User-Agent", "Unknown")[:500]
@@ -611,9 +624,6 @@ def create_app():
                 "error": "Discord account not connected. Please login with Discord first.",
                 "requires_oauth": True
             }), 400
-        
-        # Add more debug logging
-        logger.info(f"Checking verification for user: {discord_user['id']} ({discord_user['full_username']})")
         
         # Check if already verified
         existing_user = db_manager.get_user(discord_user["id"])
@@ -919,7 +929,7 @@ def create_app():
 
     @app.route("/callback")
     def callback():
-        """Discord OAuth callback - FIXED VERSION"""
+        """Discord OAuth callback"""
         code = request.args.get("code")
         state = request.args.get("state")
         
