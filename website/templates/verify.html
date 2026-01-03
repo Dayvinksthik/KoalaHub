@@ -9,251 +9,76 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <style>
-        .debug-info { 
-            background: #f8f9fa;
-            border-left: 4px solid #3498db;
-            padding: 15px;
-            margin: 15px 0;
-            border-radius: 5px;
-            font-family: monospace;
-            font-size: 12px;
-            display: none;
-        }
-        .debug-toggle { 
-            background: #3498db;
-            color: #fff;
-            border: none;
-            padding: 5px 10px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 11px;
-            float: right;
-        }
-        .error-details { 
-            background: #f8d7da;
-            color: #721c24;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            font-size: 12px;
-            display: none;
-        }
-        .verification-status { 
-            background: #e8f5e9;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 15px 0;
-            border-left: 4px solid #2ecc71;
-        }
-        .btn-test { 
-            background: #f39c12;
-            color: #fff;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            margin: 5px;
-        }
-        
-        /* Discord connect styles */
-        .btn-discord {
-            display: inline-block;
-            background: #5865F2;
-            color: white;
-            padding: 15px 30px;
-            border-radius: 8px;
-            text-decoration: none;
-            font-size: 18px;
-            font-weight: bold;
-            margin: 20px 0;
-            transition: background 0.3s;
-            width: 100%;
-            text-align: center;
-        }
-        .btn-discord:hover {
-            background: #4752C4;
-        }
-        
-        .btn-verify {
-            width: 100%;
-            padding: 15px;
-            background: #5865f2;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-weight: bold;
-            cursor: pointer;
-            transition: background 0.3s;
-            margin-top: 10px;
-            text-align: center;
-        }
-        .btn-verify:hover {
-            background: #4752c4;
-        }
-        .btn-verify:disabled {
-            background: #cccccc;
-            cursor: not-allowed;
-        }
-        
-        .btn-logout {
-            display: inline-block;
-            background: #e74c3c;
-            color: white;
-            padding: 10px 20px;
-            border-radius: 6px;
-            text-decoration: none;
-            font-size: 14px;
-            margin: 10px 0;
-            transition: background 0.3s;
-            text-align: center;
-        }
-        .btn-logout:hover {
-            background: #c0392b;
-        }
-        
-        .user-info {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 20px 0;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 10px;
-        }
-        .avatar-placeholder {
-            width: 60px;
-            height: 60px;
-            background: #5865F2;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-right: 15px;
-            color: white;
-            font-size: 24px;
-        }
-        .user-details h3 {
-            margin: 0;
-            color: #333;
-        }
-        .user-details p {
-            margin: 5px 0 0 0;
-            color: #666;
-            font-size: 14px;
-        }
+        .debug-info{background:#f8f9fa;border-left:4px solid #3498db;padding:15px;margin:15px 0;border-radius:5px;font-family:monospace;font-size:12px;display:none}
+        .debug-toggle{background:#3498db;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;float:right}
+        .error-details{background:#f8d7da;color:#721c24;padding:10px;border-radius:5px;margin:10px 0;font-size:12px;display:none}
+        .verification-status{background:#e8f5e9;padding:15px;border-radius:8px;margin:15px 0;border-left:4px solid #2ecc71}
+        .btn-discord{display:block;background:#5865F2;color:white;padding:15px;border-radius:8px;text-decoration:none;font-size:18px;font-weight:bold;text-align:center}
+        .btn-verify{width:100%;padding:15px;background:#5865f2;color:white;border:none;border-radius:8px;font-size:1rem;font-weight:bold;cursor:pointer}
+        .btn-verify:disabled{background:#ccc}
+        .btn-logout{display:block;background:#e74c3c;color:white;padding:10px;border-radius:6px;text-decoration:none;text-align:center;margin-top:10px}
+        .user-info{display:flex;justify-content:center;align-items:center;background:#f8f9fa;padding:15px;border-radius:10px}
+        .avatar-placeholder{width:60px;height:60px;background:#5865F2;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:24px;margin-right:15px}
     </style>
 </head>
 
 <body>
-<!-- Store dynamic data in hidden elements -->
-<div id="app-data" style="display: none;" 
-     data-has-discord-user="{% if discord_user %}true{% else %}false{% endif %}"
-     data-is-verified="{% if is_verified %}true{% else %}false{% endif %}"
-     data-csrf-token="{{ csrf_token or '' }}">
+
+<div id="app-data"
+     data-has-discord-user="{{ 'true' if discord_user else 'false' }}"
+     data-is-verified="{{ 'true' if is_verified else 'false' }}"
+     data-csrf-token="{{ csrf_token }}">
 </div>
 
 <div class="verification-container">
-    <div class="verification-card">
+<div class="verification-card">
 
-        <div class="verification-header">
-            <i class="fas fa-shield-check fa-3x"></i>
-            <h1>Discord Verification</h1>
-            <p class="subtitle">Connect your Discord account</p>
-            <button class="debug-toggle">Debug</button>
-        </div>
-
-        <div id="debugInfo" class="debug-info">
-            Session ID: {{ session.get('_id', 'none') }}<br>
-            Discord User: {% if discord_user %}YES{% else %}NO{% endif %}<br>
-            Verified: {% if is_verified %}YES{% else %}NO{% endif %}<br>
-            CSRF: {% if csrf_token %}OK{% else %}MISSING{% endif %}
-        </div>
-
-        <div class="verification-body">
-
-            {% if not discord_user %}
-                <a href="{{ url_for('auth_discord') }}" class="btn-discord">
-                    <i class="fab fa-discord"></i> Login with Discord
-                </a>
-                
-                <div class="info-box">
-                    <h3><i class="fas fa-info-circle"></i> How to verify:</h3>
-                    <ol>
-                        <li>Click "Login with Discord" above</li>
-                        <li>Authorize the application</li>
-                        <li>Click "Start Verification"</li>
-                        <li>Wait for the bot to give you the Verified role</li>
-                    </ol>
-                </div>
-
-            {% elif is_verified %}
-                <div class="verification-status">
-                    <h3>✅ Already Verified</h3>
-                    <p>You are already verified and have access to all channels.</p>
-                    <div class="user-info">
-                        <div class="avatar-placeholder">
-                            <i class="fas fa-user"></i>
-                        </div>
-                        <div class="user-details">
-                            <h3>{{ discord_user.full_username }}</h3>
-                            <p>Verified User</p>
-                        </div>
-                    </div>
-                    <a href="{{ url_for('auth_logout') }}" class="btn-logout">
-                        <i class="fas fa-sign-out-alt"></i> Use another account
-                    </a>
-                </div>
-
-            {% else %}
-                <h3>Ready to Verify</h3>
-                <div class="user-info">
-                    <div class="avatar-placeholder">
-                        <i class="fas fa-user"></i>
-                    </div>
-                    <div class="user-details">
-                        <h3>{{ discord_user.full_username }}</h3>
-                        <p>Logged in with Discord</p>
-                    </div>
-                </div>
-                
-                <button id="startVerification" class="btn-verify">
-                    <i class="fas fa-check-circle"></i> Start Verification
-                </button>
-                
-                <div class="info-box">
-                    <h3><i class="fas fa-info-circle"></i> What happens next:</h3>
-                    <ul>
-                        <li><i class="fas fa-check"></i> Your Discord account will be verified</li>
-                        <li><i class="fas fa-check"></i> The bot will give you the Verified role</li>
-                        <li><i class="fas fa-check"></i> You'll get access to all channels</li>
-                        <li><i class="fas fa-check"></i> Your IP will be checked for security</li>
-                    </ul>
-                </div>
-                
-                <a href="{{ url_for('auth_logout') }}" class="btn-logout">
-                    <i class="fas fa-sign-out-alt"></i> Not you? Use another account
-                </a>
-            {% endif %}
-
-            <div id="verificationResult"></div>
-            <div id="errorDetails" class="error-details"></div>
-
-        </div>
-
-        <div class="verification-footer">
-            <p><i class="fas fa-shield-alt"></i> Powered by KoalaHub Security System</p>
-            {% if not is_verified and discord_user %}
-                <p><a href="/feedback" style="color: #666;">Having issues? Get help here</a></p>
-            {% endif %}
-        </div>
-
-    </div>
+<div class="verification-header">
+    <h1>Discord Verification</h1>
+    <button class="debug-toggle">Debug</button>
 </div>
 
-<!-- Load external JavaScript files -->
+<div id="debugInfo" class="debug-info">
+    Discord User: {{ 'YES' if discord_user else 'NO' }}<br>
+    Verified: {{ 'YES' if is_verified else 'NO' }}<br>
+    CSRF: {{ 'OK' if csrf_token else 'MISSING' }}
+</div>
+
+{% if not discord_user %}
+    <a href="{{ url_for('auth_discord') }}" class="btn-discord">
+        <i class="fab fa-discord"></i> Login with Discord
+    </a>
+
+{% elif is_verified %}
+    <div class="verification-status">
+        <h3>✅ Already Verified</h3>
+        <p>{{ discord_user.full_username }}</p>
+        <a href="{{ url_for('auth_logout') }}" class="btn-logout">Use another account</a>
+    </div>
+
+{% else %}
+    <div class="user-info">
+        <div class="avatar-placeholder"><i class="fas fa-user"></i></div>
+        <div>
+            <strong>{{ discord_user.full_username }}</strong><br>
+            Ready to verify
+        </div>
+    </div>
+
+    <button id="startVerification" class="btn-verify">
+        <i class="fas fa-check-circle"></i> Start Verification
+    </button>
+
+    <a href="{{ url_for('auth_logout') }}" class="btn-logout">Not you?</a>
+{% endif %}
+
+<div id="verificationResult"></div>
+<div id="errorDetails" class="error-details"></div>
+
+</div>
+</div>
+
 <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/verify.js') }}" defer></script>
-
 </body>
 </html>
